@@ -173,6 +173,19 @@ show_probe() {
   echo
 }
 
+wait_for_ollama() { # seconds
+  local deadline=$(( $(date +%s) + ${1:-30} ))
+  printf '  waiting for ollama to accept connections'
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    if curl -sf -m 2 "$OLLAMA_URL/api/tags" >/dev/null 2>&1; then
+      printf ' ready\n'; return 0
+    fi
+    printf '.'; sleep 1
+  done
+  printf ' timed out\n'
+  return 1
+}
+
 # --- config writing ----------------------------------------------------------
 set_config() { # key value
   [ "$DRY" = 1 ] && { printf '  would set %s=%s\n' "$1" "$2"; return 0; }
@@ -390,6 +403,8 @@ case "$choice" in
         fi
         run sudo systemctl daemon-reload
         run sudo systemctl enable --now ollama
+        [ "$DRY" = 1 ] || wait_for_ollama 30 || \
+          warn "ollama did not come up; check: systemctl status ollama"
       fi
       echo
     fi
@@ -412,7 +427,26 @@ case "$choice" in
       3) model=llama3.2:3b ;;
       *) model=granite4:micro-h ;;
     esac
-    confirm "Pull $model now?" && run ollama pull "$model"
+    if confirm "Pull $model now?"; then
+      # A running service is a precondition for the pull, whether or not this
+      # run was the thing that started it.
+      [ "$DRY" = 1 ] || curl -sf -m 2 "$OLLAMA_URL/api/tags" >/dev/null 2>&1 \
+        || wait_for_ollama 30 || true
+      if ! run ollama pull "$model"; then
+        no "the pull failed - not switching the backend to local"
+        echo "     Fix the service, then run this again, or pick another backend."
+        exit 1
+      fi
+    fi
+    # Declining the pull is fine, but the backend must not claim to be local
+    # when the model it needs is not there - that fails later, confusingly.
+    if [ "$DRY" != 1 ] && ! curl -sf -m 3 "$OLLAMA_URL/api/tags" 2>/dev/null \
+         | jq -e --arg m "$model" '[.models[]?.name]|index($m)!=null' >/dev/null 2>&1; then
+      no "$model is not present, so the local backend would fail"
+      echo "     Pull it later with: ollama pull $model"
+      set_config TYPEWRITER_OLLAMA_MODEL "$model"
+      exit 1
+    fi
     set_config TYPEWRITER_BACKEND local
     set_config TYPEWRITER_OLLAMA_MODEL "$model"
     echo

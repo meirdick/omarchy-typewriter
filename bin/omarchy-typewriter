@@ -90,8 +90,8 @@ mkdir -p "$RUNTIME_DIR" 2>/dev/null || true
 STATUS_FILE="$RUNTIME_DIR/status.json"
 set_status() { # state, tooltip
   [ "${quiet_notify:-0}" = 1 ] && return 0
-  jq -n --arg s "$1" --arg t "${2:-}" --arg c "${class:-}" \
-    '{text: (if $s == "idle" then "" else $t end), alt: $s, class: $s,
+  jq -n --arg s "$1" --arg t "${2:-}" --arg c "${class:-}" --argjson at "$(date +%s)" \
+    '{text: (if $s == "idle" then "" else $t end), alt: $s, class: $s, at: $at,
       tooltip: ($t + (if $c == "" then "" else "\nfocused: " + $c end))}' \
     > "$STATUS_FILE.tmp" 2>/dev/null && mv "$STATUS_FILE.tmp" "$STATUS_FILE" 2>/dev/null || true
 }

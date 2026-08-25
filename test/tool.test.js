@@ -12,10 +12,14 @@ const path = require("node:path");
 
 const TOOL = path.join(__dirname, "..", "bin", "omarchy-typewriter");
 
+// Keep the tests out of the real session's runtime directory. Without this a
+// test that exercises a failure leaves that failure sitting in the user's bar.
+const RUNTIME = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "tw-test-"));
+
 function run(args, env = {}) {
   return execFileSync(TOOL, args, {
     encoding: "utf8",
-    env: { ...process.env, ...env },
+    env: { ...process.env, XDG_RUNTIME_DIR: RUNTIME, ...env },
   });
 }
 
