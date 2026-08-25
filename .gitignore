@@ -1,0 +1,15 @@
+# Never commit a real config or a credential. config.example is the shipped
+# template and must stay tracked, so this matches only a real config dropped
+# next to it.
+/config/config
+*.token
+
+# makepkg output
+pkg/
+src/
+*.pkg.tar.zst
+*.pkg.tar.zst.sig
+
+*.bak
+*.orig
+probe.json

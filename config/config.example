@@ -1,0 +1,85 @@
+# omarchy-typewriter settings.
+#
+# Shell syntax, sourced by the tool. Three layers, highest wins:
+#   1. TYPEWRITER_* in the environment
+#   2. ~/.config/omarchy-typewriter/config   (this file)
+#   3. /etc/omarchy-typewriter/config        (system defaults)
+#
+# Run `omarchy-typewriter-setup` to fill this in interactively.
+
+# Which backend to use: auto | local | pi | cloudflare | anthropic
+# auto order: local (if the model is pulled) -> pi -> cloudflare -> anthropic
+TYPEWRITER_BACKEND=auto
+
+# --- Local, fully offline ----------------------------------------------------
+# Needs ollama, and ollama-vulkan plus OLLAMA_IGPU_ENABLE=1 on the service to
+# use an integrated GPU. Without that variable ollama silently runs on the CPU
+# at roughly half the speed, and nothing tells you.
+#
+# Measured on an Intel Arc B390 iGPU, median of 3, on a 327-character paragraph:
+#   granite4:micro-h     4.88s   5/5 correctness   1.9 GB
+#   qwen3:4b-instruct    4.72s   5/5               2.5 GB
+#   llama3.2:3b          3.40s   3/5               2.0 GB
+# llama3.2:3b is the fastest and answers short selections instead of rewriting
+# them: asked to rewrite "is this working?" it replies "No".
+TYPEWRITER_OLLAMA_MODEL=granite4:micro-h
+TYPEWRITER_OLLAMA_URL=http://localhost:11434
+
+# --- Cloudflare Workers AI ---------------------------------------------------
+# Needs an account id and a token with Account > Workers AI > Read. The token
+# lives in its own 0600 file, never here.
+#
+#   llama-4-scout-17b-16e-instruct   1.48s   8/8 on the hard suite
+#   llama-3.3-70b-instruct-fp8-fast  1.13s   7/8, and it changed a word's meaning
+#   granite-4.0-h-micro              2.33s   5/5, nine times cheaper
+TYPEWRITER_CF_ACCOUNT=
+TYPEWRITER_CF_MODEL=@cf/meta/llama-4-scout-17b-16e-instruct
+#TYPEWRITER_CF_TOKEN_FILE=~/.config/omarchy-typewriter/cloudflare.token
+
+# --- Anthropic ---------------------------------------------------------------
+# Uses ANTHROPIC_API_KEY from the environment.
+TYPEWRITER_ANTHROPIC_MODEL=claude-haiku-4-5
+
+# --- Behaviour ---------------------------------------------------------------
+
+# What to act on when you press the key.
+#   auto       a selection if you made one, otherwise everything before the
+#              cursor in the focused input
+#   selection  only ever what is highlighted
+#   line       always the line before the cursor
+#   words:3    always the last three words
+#   all        everything before the cursor
+TYPEWRITER_SCOPE=auto
+
+# What auto falls back to when nothing is selected.
+#   all   everything before the cursor in the focused input. Ctrl+Shift+Home
+#         stops at the input boundary, so a Gmail compose box or a Slack message
+#         is taken whole without the quoted thread below it.
+#   line  only back to the start of the current line. Safer in a code editor,
+#         where "all" means everything above the cursor.
+TYPEWRITER_AUTO_FALLBACK=all
+
+# How long to wait for the app to put the selection on the clipboard. Raise it
+# if a slow Electron app reports "nothing selected" for text that was selected.
+TYPEWRITER_CAPTURE_TIMEOUT_MS=640
+
+# Seconds to wait for you to release the hotkey before typing anything.
+TYPEWRITER_PASTE_DELAY=0.3
+
+# If the result is under this percentage of the input length, do not paste it.
+# Catches a model answering the selection instead of rewriting it. Only applies
+# to inputs longer than 80 characters.
+TYPEWRITER_MIN_RATIO=20
+
+# Refuse selections longer than this, as a guard against a stale selection.
+TYPEWRITER_MAX_CHARS=20000
+
+# Show the on-screen indicator while working. 1 or 0.
+TYPEWRITER_INDICATOR=1
+
+# Restore whatever was on the clipboard before the run. 1 or 0.
+TYPEWRITER_RESTORE_CLIPBOARD=1
+
+# Window classes treated as terminals, which need Ctrl+Shift+C and Ctrl+Shift+V.
+# An unlisted terminal gets a bare Ctrl+C, which is SIGINT rather than a copy.
+#TYPEWRITER_TERMINAL_RE='alacritty|foot|kitty|ghostty|wezterm|rio|contour|terminal'

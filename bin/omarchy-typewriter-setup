@@ -1,0 +1,482 @@
+#!/usr/bin/env bash
+#
+# omarchy:summary=Set up omarchy-typewriter, one approved step at a time
+# omarchy:group=text
+# omarchy:args=[--probe --json|--dry-run|--yes|--print-bindings|--remove-bindings|--set-cf-token|--uninstall]
+# omarchy:examples=omarchy-typewriter-setup | omarchy-typewriter-setup --probe --json
+#
+# Nothing here happens without a yes. Every step that needs sudo prints the
+# exact command first, and --dry-run prints the whole plan while changing
+# nothing.
+
+set -uo pipefail
+
+PROG="omarchy-typewriter"
+SELF_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+TOOL="$SELF_DIR/$PROG"
+[ -x "$TOOL" ] || TOOL="$PROG"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/$PROG"
+CONFIG="$CONFIG_DIR/config"
+TOKEN_FILE="$CONFIG_DIR/cloudflare.token"
+BINDINGS="${XDG_CONFIG_HOME:-$HOME/.config}/hypr/bindings.lua"
+BEGIN_MARK="-- BEGIN $PROG"
+END_MARK="-- END $PROG"
+IGPU_DROPIN="/etc/systemd/system/ollama.service.d/${PROG}-igpu.conf"
+# Read the same layers the tool reads, so the probe describes the real state.
+[ -r "/etc/$PROG/config" ] && . "/etc/$PROG/config"
+[ -r "$CONFIG" ] && . "$CONFIG"
+OLLAMA_URL="${TYPEWRITER_OLLAMA_URL:-http://localhost:11434}"
+
+DRY=0; ASSUME_YES=0
+
+# --- output ------------------------------------------------------------------
+bold() { printf '\033[1m%s\033[0m\n' "$*"; }
+dim()  { printf '\033[2m%s\033[0m\n' "$*"; }
+ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
+no()   { printf '  \033[31m✗\033[0m %s\n' "$*"; }
+warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
+
+confirm() {
+  [ "$ASSUME_YES" = 1 ] && return 0
+  if [ -t 0 ] && command -v gum >/dev/null 2>&1; then gum confirm "$1"; return $?; fi
+  local r; read -r -p "$1 [y/N] " r || return 1; [[ "$r" =~ ^[Yy] ]]
+}
+
+# Every privileged or mutating command goes through this, so --dry-run is
+# honest by construction rather than by remembering to check a flag.
+run() {
+  if [ "$DRY" = 1 ]; then printf '  would run: %s\n' "$*"; return 0; fi
+  printf '  \033[2m$ %s\033[0m\n' "$*"
+  "$@"
+}
+
+# --- probe -------------------------------------------------------------------
+# Read-only. Never changes anything, so the panel and --dry-run can both call it.
+probe() {
+  local missing=() b
+  for b in wtype wl-copy wl-paste jq curl; do
+    command -v "$b" >/dev/null 2>&1 || missing+=("$b")
+  done
+
+  local vulkan=false; command -v omarchy-hw-vulkan >/dev/null 2>&1 \
+    && omarchy-hw-vulkan >/dev/null 2>&1 && vulkan=true
+  local gpu; gpu="$(lspci 2>/dev/null | grep -iE 'vga|3d|display' \
+    | sed 's/.*: //' | head -1)"
+  local vendor=other
+  case "$gpu" in *NVIDIA*|*nVidia*) vendor=nvidia ;; *AMD*|*ATI*) vendor=amd ;;
+                 *Intel*) vendor=intel ;; esac
+
+  local ollama_bin=false ollama_ver="" ollama_vulkan=false
+  command -v ollama >/dev/null 2>&1 && { ollama_bin=true
+    ollama_ver="$(ollama --version 2>/dev/null | grep -oE '[0-9]+\.[0-9.]+' | head -1)"; }
+  pacman -Qq ollama-vulkan >/dev/null 2>&1 && ollama_vulkan=true
+
+  # The variable must reach the service, not this shell. Ollama runs as a system
+  # unit with ProtectHome, so a user export does nothing at all.
+  local igpu_env=false
+  systemctl show ollama.service -p Environment 2>/dev/null \
+    | grep -q 'OLLAMA_IGPU_ENABLE=1' && igpu_env=true
+  local svc_active=false
+  systemctl is-active --quiet ollama 2>/dev/null && svc_active=true
+
+  local api=false tags=""
+  tags="$(curl -sf -m 2 "$OLLAMA_URL/api/tags" 2>/dev/null)" && api=true
+  local model="${TYPEWRITER_OLLAMA_MODEL:-granite4:micro-h}" model_present=false
+  [ -n "$tags" ] && printf '%s' "$tags" \
+    | jq -e --arg m "$model" '[.models[]?.name]|index($m)!=null' >/dev/null 2>&1 \
+    && model_present=true
+
+  # The only check that catches the silent CPU fallback. Everything else can be
+  # green while inference quietly runs on the CPU at half speed.
+  local on_gpu=unknown
+  if [ "$api" = true ] && [ "$model_present" = true ]; then
+    curl -sf -m 60 "$OLLAMA_URL/api/generate" \
+      -d "$(jq -n --arg m "$model" '{model:$m,prompt:"hi",stream:false,options:{num_predict:1}}')" \
+      >/dev/null 2>&1
+    local vram
+    vram="$(curl -sf -m 5 "$OLLAMA_URL/api/ps" 2>/dev/null \
+            | jq -r '[.models[]?.size_vram // 0] | max // 0')"
+    [ -n "$vram" ] && [ "$vram" != null ] \
+      && { [ "$vram" -gt 0 ] 2>/dev/null && on_gpu=true || on_gpu=false; }
+  fi
+
+  local free_mb; free_mb="$(df -Pm /var/lib/ollama 2>/dev/null || df -Pm /)"
+  free_mb="$(printf '%s' "$free_mb" | awk 'NR==2{print $4}')"
+
+  local pi_bin=false pi_model="${TYPEWRITER_PI_MODEL:-}"
+  command -v pi >/dev/null 2>&1 && pi_bin=true
+
+  local cf_account="${TYPEWRITER_CF_ACCOUNT:-}" cf_token=false cf_perms=""
+  [ -s "$TOKEN_FILE" ] && { cf_token=true
+    cf_perms="$(stat -c '%a' "$TOKEN_FILE" 2>/dev/null)"; }
+
+  local binds=false
+  [ -r "$BINDINGS" ] && grep -qF -- "$BEGIN_MARK" "$BINDINGS" && binds=true
+
+  jq -n \
+    --argjson missing "$(printf '%s\n' "${missing[@]+"${missing[@]}"}" | jq -R . | jq -s 'map(select(.!=""))')" \
+    --argjson vulkan "$vulkan" --arg gpu "$gpu" --arg vendor "$vendor" \
+    --argjson ollama "$ollama_bin" --arg ollama_version "$ollama_ver" \
+    --argjson ollama_vulkan "$ollama_vulkan" --argjson igpu_env "$igpu_env" \
+    --argjson service_active "$svc_active" --argjson api "$api" \
+    --arg model "$model" --argjson model_present "$model_present" \
+    --arg on_gpu "$on_gpu" --arg free_mb "${free_mb:-0}" \
+    --argjson pi "$pi_bin" --arg pi_model "$pi_model" \
+    --arg cf_account "$cf_account" --argjson cf_token "$cf_token" \
+    --arg cf_token_perms "$cf_perms" --argjson bindings "$binds" \
+    '{tools:{missing:$missing},
+      hardware:{vulkan:$vulkan, gpu:$gpu, vendor:$vendor, free_mb:($free_mb|tonumber)},
+      local:{ollama:$ollama, version:$ollama_version, ollama_vulkan:$ollama_vulkan,
+             igpu_env:$igpu_env, service_active:$service_active, api:$api,
+             model:$model, model_present:$model_present, on_gpu:$on_gpu},
+      pi:{installed:$pi, model:$pi_model},
+      cloudflare:{account:$cf_account, token:$cf_token, token_perms:$cf_token_perms},
+      bindings:{installed:$bindings}}'
+}
+
+show_probe() {
+  local p="$1"
+  bold "What is here now"
+  local miss; miss="$(jq -r '.tools.missing|join(", ")' <<<"$p")"
+  [ -z "$miss" ] && ok "required tools present" || no "missing tools: $miss"
+
+  jq -e '.pi.installed' <<<"$p" >/dev/null \
+    && { [ -n "$(jq -r '.pi.model' <<<"$p")" ] \
+         && ok "pi installed, model $(jq -r '.pi.model' <<<"$p")" \
+         || warn "pi installed, no model chosen yet"; } \
+    || dim "  · pi not installed"
+
+  if jq -e '.local.ollama' <<<"$p" >/dev/null; then
+    ok "ollama $(jq -r '.local.version' <<<"$p")"
+    jq -e '.local.ollama_vulkan' <<<"$p" >/dev/null && ok "ollama-vulkan installed" \
+      || warn "ollama-vulkan missing (GPU acceleration unavailable)"
+    jq -e '.local.igpu_env' <<<"$p" >/dev/null && ok "OLLAMA_IGPU_ENABLE reaches the service" \
+      || warn "OLLAMA_IGPU_ENABLE not set on the service - it will run on the CPU"
+    jq -e '.local.model_present' <<<"$p" >/dev/null \
+      && ok "model $(jq -r '.local.model' <<<"$p") pulled" \
+      || warn "model $(jq -r '.local.model' <<<"$p") not pulled"
+    case "$(jq -r '.local.on_gpu' <<<"$p")" in
+      true)  ok "inference is running on the GPU" ;;
+      false) no "inference is running on the CPU, not the GPU" ;;
+      *)     dim "  · GPU check not run (needs a pulled model and a live service)" ;;
+    esac
+  else
+    dim "  · ollama not installed"
+  fi
+
+  [ -n "$(jq -r '.cloudflare.account' <<<"$p")" ] \
+    && jq -e '.cloudflare.token' <<<"$p" >/dev/null \
+    && ok "cloudflare configured" || dim "  · cloudflare not configured"
+
+  jq -e '.bindings.installed' <<<"$p" >/dev/null \
+    && ok "keybindings installed" || dim "  · no keybindings installed"
+  echo
+}
+
+# --- config writing ----------------------------------------------------------
+set_config() { # key value
+  [ "$DRY" = 1 ] && { printf '  would set %s=%s\n' "$1" "$2"; return 0; }
+  mkdir -p "$CONFIG_DIR"; chmod 700 "$CONFIG_DIR"
+  [ -f "$CONFIG" ] || { : > "$CONFIG"; chmod 600 "$CONFIG"; }
+  if grep -qE "^$1=" "$CONFIG"; then
+    sed -i "s|^$1=.*|$1=$2|" "$CONFIG"
+  else
+    printf '%s=%s\n' "$1" "$2" >> "$CONFIG"
+  fi
+  printf '  set %s=%s\n' "$1" "$2"
+}
+
+# --- keybindings -------------------------------------------------------------
+bindings_block() {
+  cat <<'BLOCK'
+-- BEGIN omarchy-typewriter
+-- Proofread the selection, or the text before the cursor if nothing is
+-- selected. Remove with: omarchy-typewriter-setup --remove-bindings
+o.bind("SUPER + ALT + R", "Proofread selection", "omarchy-typewriter proof")
+-- END omarchy-typewriter
+BLOCK
+}
+
+bindings_block_full() {
+  cat <<'BLOCK'
+-- BEGIN omarchy-typewriter
+-- SUPER+ALT+1..5 defaults to "switch to group window N". These unbinds free
+-- those five keys; delete them and the binds below to get group windows back.
+-- Remove with: omarchy-typewriter-setup --remove-bindings
+for _, n in ipairs({ "1", "2", "3", "4", "5" }) do
+  hl.unbind("SUPER + ALT + " .. n)
+end
+
+o.bind("SUPER + ALT + 1", "Proofread selection", "omarchy-typewriter proof")
+o.bind("SUPER + ALT + 2", "Rewrite selection", "omarchy-typewriter rewrite")
+o.bind("SUPER + ALT + 3", "Shorten selection", "omarchy-typewriter concise")
+o.bind("SUPER + ALT + 4", "Formalise selection", "omarchy-typewriter formal")
+o.bind("SUPER + ALT + 5", "Bullet selection", "omarchy-typewriter bullets")
+-- END omarchy-typewriter
+BLOCK
+}
+
+remove_bindings() {
+  [ -r "$BINDINGS" ] || { echo "no $BINDINGS"; return 0; }
+  grep -qF -- "$BEGIN_MARK" "$BINDINGS" || { echo "no block to remove"; return 0; }
+  run cp "$BINDINGS" "$BINDINGS.bak.$(date +%s)"
+  if [ "$DRY" = 1 ]; then echo "  would delete the managed block"; return 0; fi
+  sed -i "/^$BEGIN_MARK\$/,/^$END_MARK\$/d" "$BINDINGS"
+  # The block is appended after a blank line; drop a trailing run of blanks.
+  sed -i -e :a -e '/^\n*$/{$d;N;ba' -e '}' "$BINDINGS"
+  echo "  removed"
+  command -v hyprctl >/dev/null && hyprctl reload >/dev/null 2>&1
+}
+
+install_bindings() { # block-function-name
+  mkdir -p "$(dirname "$BINDINGS")"
+  [ -f "$BINDINGS" ] || : > "$BINDINGS"
+  run cp "$BINDINGS" "$BINDINGS.bak.$(date +%s)"
+  if [ "$DRY" = 1 ]; then echo "  would append:"; "$1" | sed 's/^/    /'; return 0; fi
+  # Idempotent: strip any previous block, then squeeze the trailing blank lines
+  # it left behind, so writing twice produces a byte-identical file.
+  sed -i "/^$BEGIN_MARK\$/,/^$END_MARK\$/d" "$BINDINGS"
+  sed -i -e :a -e '/^\n*$/{$d;N;ba' -e '}' "$BINDINGS"
+  { printf '\n'; "$1"; } >> "$BINDINGS"
+  echo "  written to $BINDINGS"
+  command -v hyprctl >/dev/null && hyprctl reload >/dev/null 2>&1
+}
+
+# --- token -------------------------------------------------------------------
+set_cf_token() {
+  mkdir -p "$CONFIG_DIR"; chmod 700 "$CONFIG_DIR"
+  # Read from the terminal, never from argv: /proc/*/cmdline is world-readable.
+  local t
+  if [ -t 0 ]; then read -rsp "Cloudflare API token (Workers AI: Read): " t; echo
+  else read -r t; fi
+  [ -n "$t" ] || { echo "nothing entered"; return 1; }
+  printf '%s\n' "$t" > "$TOKEN_FILE"
+  chmod 600 "$TOKEN_FILE"
+  echo "  written to $TOKEN_FILE (0600)"
+}
+
+# --- uninstall ---------------------------------------------------------------
+uninstall() {
+  bold "Removing what setup added"
+  remove_bindings
+  [ -f "$IGPU_DROPIN" ] && confirm "Remove the ollama GPU drop-in at $IGPU_DROPIN?" \
+    && { run sudo rm -f "$IGPU_DROPIN"; run sudo systemctl daemon-reload; }
+  confirm "Remove $CONFIG_DIR (config and Cloudflare token)?" \
+    && run rm -rf "$CONFIG_DIR"
+  local m="${TYPEWRITER_OLLAMA_MODEL:-granite4:micro-h}"
+  command -v ollama >/dev/null && confirm "Remove the local model $m as well?" \
+    && run ollama rm "$m"
+  echo
+  dim "The package itself: sudo pacman -R $PROG"
+}
+
+# --- arguments ---------------------------------------------------------------
+case "${1:-}" in
+  --probe) shift; [ "${1:-}" = --json ] && shift; probe; exit 0 ;;
+  --dry-run) DRY=1; shift ;;
+  --yes) ASSUME_YES=1; shift ;;
+  --print-bindings) bindings_block; exit 0 ;;
+  --print-bindings-all) bindings_block_full; exit 0 ;;
+  --remove-bindings) remove_bindings; exit 0 ;;
+  --set-cf-token) set_cf_token; exit $? ;;
+  --uninstall) uninstall; exit 0 ;;
+  -h|--help) sed -n '8,12p' "$0" | sed 's/^# \?//'; exit 0 ;;
+  "") ;;
+  *) echo "unknown option: $1" >&2; exit 1 ;;
+esac
+
+# --- the wizard --------------------------------------------------------------
+echo
+bold "$PROG setup"
+[ "$DRY" = 1 ] && dim "Dry run: nothing will be changed."
+echo
+P="$(probe)"
+show_probe "$P"
+
+miss="$(jq -r '.tools.missing|join(" ")' <<<"$P")"
+if [ -n "$miss" ]; then
+  bold "Missing tools"
+  echo "  $PROG cannot work without: $miss"
+  confirm "Install them with pacman?" && run sudo pacman -S --needed --noconfirm $miss
+  echo
+fi
+
+bold "Choose a backend"
+echo "  Every option below transforms the same way. They differ in speed,"
+echo "  privacy, and how much setup they need."
+echo
+pi_installed="$(jq -r '.pi.installed' <<<"$P")"
+[ "$pi_installed" = true ] && \
+echo "  1. pi          ~1.5s   no sudo, no download, no token." && \
+echo "                         Uses the providers you already authenticated."
+echo "  2. local       ~4.9s   Fully offline, nothing leaves the machine."
+echo "                         Costs about 2 GB and one sudo step."
+echo "  3. cloudflare  ~1.5s   Needs an account id and a token."
+echo "                         Your selected text is sent to Cloudflare."
+echo
+default_choice=2; [ "$pi_installed" = true ] && default_choice=1
+read -r -p "Which backend? [$default_choice] " choice
+choice="${choice:-$default_choice}"
+echo
+
+case "$choice" in
+  1)
+    bold "pi"
+    if [ "$pi_installed" != true ]; then
+      echo "  pi is not installed. It is one of Omarchy's default agents:"
+      echo "    omarchy menu  ->  Setup  ->  Default agent"
+      exit 1
+    fi
+    echo "  Pick a model. pi's own default provider took 15.5s on a paragraph"
+    echo "  that claude-haiku-4-5 did in 1.5s, so this is worth choosing."
+    echo
+    pi --list-models 2>/dev/null | head -1
+    pi --list-models 2>/dev/null | grep -iE 'haiku|flash|mini|nano' | head -8 | sed 's/^/  /'
+    echo
+    read -r -p "Model (provider/id) [anthropic/claude-haiku-4-5]: " m
+    m="${m:-anthropic/claude-haiku-4-5}"
+    echo "  Checking that it answers..."
+    if [ "$DRY" = 1 ]; then
+      echo "  would verify $m with one live call"
+    elif out="$(pi -p --no-session --no-tools --thinking off --model "$m" \
+                 --system-prompt 'Reply with the single word: ready' 'ready?' \
+                 </dev/null 2>&1)"; then
+      ok "$m answered: $(printf '%s' "$out" | head -c 40)"
+      set_config TYPEWRITER_BACKEND pi
+      set_config TYPEWRITER_PI_MODEL "$m"
+    else
+      no "$m failed: $(printf '%s' "$out" | head -c 160)"
+      echo "  A model can be listed and still not work - a provider with no"
+      echo "  credit returns 402. Pick another and run setup again."
+      exit 1
+    fi
+    ;;
+
+  2)
+    bold "Local model"
+    vendor="$(jq -r '.hardware.vendor' <<<"$P")"
+    vulkan="$(jq -r '.hardware.vulkan' <<<"$P")"
+    echo "  GPU: $(jq -r '.hardware.gpu' <<<"$P")"
+    case "$vendor" in
+      nvidia) warn "NVIDIA: install ollama-cuda rather than ollama-vulkan." ;;
+      amd)    warn "AMD: ollama-rocm is usually the better build than vulkan." ;;
+    esac
+    pkgs="ollama"
+    { [ "$vulkan" = true ] && [ "$vendor" = intel ]; } && pkgs="ollama ollama-vulkan"
+    if [ "$vulkan" != true ]; then
+      warn "No Vulkan support detected. Local will run on the CPU:"
+      echo "     about 7.5s a paragraph instead of 4.9s."
+      confirm "Continue with CPU-only?" || exit 1
+    fi
+    echo
+    echo "  This adds packages. ollama-vulkan is additive - it does not replace"
+    echo "  ollama, it adds a Vulkan backend next to it."
+    confirm "Run: sudo pacman -S --needed $pkgs ?" \
+      && run sudo pacman -S --needed --noconfirm $pkgs
+    echo
+
+    if [ "$(jq -r '.local.igpu_env' <<<"$P")" != true ] && [ "$vulkan" = true ]; then
+      echo "  Ollama skips integrated GPUs unless told otherwise, and says"
+      echo "  nothing when it falls back to the CPU. This drop-in fixes that:"
+      echo
+      printf '    %s\n' "$IGPU_DROPIN"
+      printf '    [Service]\n    Environment="OLLAMA_IGPU_ENABLE=1"\n'
+      echo
+      if confirm "Write it (needs sudo)?"; then
+        run sudo mkdir -p "$(dirname "$IGPU_DROPIN")"
+        if [ "$DRY" = 1 ]; then echo "  would write $IGPU_DROPIN"; else
+          printf '[Service]\nEnvironment="OLLAMA_IGPU_ENABLE=1"\n' \
+            | sudo tee "$IGPU_DROPIN" >/dev/null
+        fi
+        run sudo systemctl daemon-reload
+        run sudo systemctl enable --now ollama
+      fi
+      echo
+    fi
+
+    bold "Model"
+    free_mb="$(jq -r '.hardware.free_mb' <<<"$P")"
+    echo "  Measured here on an Intel Arc iGPU, on a 327-character paragraph."
+    echo "  Free space where models are stored: $((free_mb / 1024)) GB"
+    echo
+    echo "    1. granite4:micro-h    4.9s   5/5 correctness   1.9 GB"
+    echo "    2. qwen3:4b-instruct   4.7s   5/5               2.5 GB"
+    echo "    3. llama3.2:3b         3.4s   3/5               2.0 GB"
+    echo "       fastest, and it answers short selections instead of"
+    echo "       rewriting them: asked to rewrite \"is this working?\" it"
+    echo "       replies \"No\"."
+    echo
+    read -r -p "Model? [1] " mc
+    case "${mc:-1}" in
+      2) model=qwen3:4b-instruct ;;
+      3) model=llama3.2:3b ;;
+      *) model=granite4:micro-h ;;
+    esac
+    confirm "Pull $model now?" && run ollama pull "$model"
+    set_config TYPEWRITER_BACKEND local
+    set_config TYPEWRITER_OLLAMA_MODEL "$model"
+    echo
+    bold "Checking where inference actually runs"
+    if [ "$DRY" = 1 ]; then echo "  would run one generate and read /api/ps"; else
+      P2="$(TYPEWRITER_OLLAMA_MODEL="$model" probe)"
+      case "$(jq -r '.local.on_gpu' <<<"$P2")" in
+        true)  ok "running on the GPU" ;;
+        false) no "running on the CPU - the drop-in above is what fixes this" ;;
+        *)     warn "could not tell" ;;
+      esac
+    fi
+    ;;
+
+  3)
+    bold "Cloudflare Workers AI"
+    echo "  Your selected text is sent to Cloudflare on every use."
+    echo
+    read -r -p "Account id: " acct
+    [ -n "$acct" ] || { echo "  no account id, stopping"; exit 1; }
+    if [ "$DRY" = 1 ]; then echo "  would prompt for a token and verify it"; else
+      set_cf_token || exit 1
+    fi
+    set_config TYPEWRITER_BACKEND cloudflare
+    set_config TYPEWRITER_CF_ACCOUNT "$acct"
+    ;;
+  *) echo "no choice made"; exit 1 ;;
+esac
+
+echo
+bold "Keybindings"
+echo "  One key, one line in $BINDINGS:"
+echo
+bindings_block | sed 's/^/    /'
+echo
+if confirm "Add it? (a timestamped backup is made first)"; then
+  install_bindings bindings_block
+  echo
+  echo "  There is also a five-preset set on SUPER+ALT+1..5 for proof, rewrite,"
+  echo "  concise, formal and bullets. It unbinds SUPER+ALT+1..5 from Hyprland's"
+  echo "  group-window switching, which you will not get back until you remove"
+  echo "  the block."
+  confirm "Use the five-preset set instead?" && install_bindings bindings_block_full
+else
+  dim "  Skipped. Print them any time: $PROG-setup --print-bindings"
+fi
+
+echo
+bold "Trying it"
+if [ "$DRY" = 1 ]; then
+  echo "  would run a sample transform and report the time"
+else
+  sample="Hi team, just wanted to follow up on the deploy we talked about last wek. The staging enviroment is still throwing the same 502 that we saw on tuesday."
+  if out="$("$TOOL" proof --text "$sample" --print --time 2>&1)"; then
+    printf '%s\n' "$out" | sed 's/^/  /'
+  else
+    no "the sample failed:"; printf '%s\n' "$out" | sed 's/^/  /'
+  fi
+fi
+
+echo
+bold "Done"
+echo "  Select some text and press your key. With nothing selected it takes"
+echo "  everything before the cursor in the focused input."
+echo "  Settings: $CONFIG"
+echo "  Undo everything setup did: $PROG-setup --uninstall"
+echo

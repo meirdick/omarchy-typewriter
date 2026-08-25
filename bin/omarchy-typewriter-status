@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+#
+# omarchy:summary=Stream omarchy-typewriter state as bar-friendly JSON
+# omarchy:group=text
+# omarchy:args=[--follow]
+# omarchy:examples=omarchy-typewriter-status | omarchy-typewriter-status --follow
+#
+# Emits one Waybar-shaped object: {text, alt, class, tooltip}.
+#
+# The tool writes its own status file, so there is no daemon to follow and
+# nothing stays resident between runs. With no file - because the tool has never
+# run this session - the answer is idle, not an error, so a bar module works
+# before the first use and on a machine where the tool is not installed.
+
+set -uo pipefail
+
+PROG="omarchy-typewriter"
+STATUS_FILE="${XDG_RUNTIME_DIR:-/tmp}/$PROG/status.json"
+IDLE='{"text":"","alt":"idle","class":"idle","tooltip":""}'
+
+emit() {
+  if [ -r "$STATUS_FILE" ] && [ -s "$STATUS_FILE" ]; then
+    cat "$STATUS_FILE"
+  else
+    printf '%s\n' "$IDLE"
+  fi
+}
+
+if [ "${1:-}" != "--follow" ]; then
+  emit
+  exit 0
+fi
+
+command -v inotifywait >/dev/null 2>&1 || {
+  # No inotify-tools: poll instead of failing. A bar that updates twice a second
+  # is better than a bar module that does not start.
+  while :; do emit; sleep 0.5; done
+}
+
+mkdir -p "$(dirname "$STATUS_FILE")" 2>/dev/null || true
+emit
+while :; do
+  inotifywait -qq -e close_write,moved_to "$(dirname "$STATUS_FILE")" 2>/dev/null || sleep 0.5
+  emit
+done
