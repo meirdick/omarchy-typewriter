@@ -184,6 +184,8 @@ fi
 # that the first run is still pasting into.
 if [ -z "$given_text" ]; then
   exec 9>"$RUNTIME_DIR/lock"
+  # Note: every child that outlives this script must have fd 9 closed, or it
+  # holds the lock on our behalf. wl-copy is the one that does.
   flock -n 9 || { echo "$PROG: already running" >&2; exit 0; }
 fi
 
@@ -222,15 +224,15 @@ text=""
 restore_clip() {
   [ "$RESTORE_CLIPBOARD" = 1 ] || return 0
   [ -n "${sentinel:-}" ] || return 0
-  if [ -n "$saved_clip" ]; then printf '%s' "$saved_clip" | wl-copy >/dev/null 2>&1
-  else wl-copy --clear 2>/dev/null || true
+  if [ -n "$saved_clip" ]; then printf '%s' "$saved_clip" | wl-copy 9>&- >/dev/null 2>&1
+  else wl-copy --clear 9>&- 2>/dev/null || true
   fi
 }
 
 # Copy whatever is selected. Returns 1 if the clipboard never changed, which
 # means there was no selection to copy.
 copy_selection() {
-  printf '%s' "$sentinel" | wl-copy >/dev/null 2>&1
+  printf '%s' "$sentinel" | wl-copy 9>&- >/dev/null 2>&1
   if is_terminal "$class"; then
     wtype -M ctrl -M shift -k c -m shift -m ctrl
   else
@@ -447,7 +449,7 @@ fi
 # on the clipboard and say so, so nothing is lost either way.
 if [ "$copy_only" != 1 ] && [ "${#text}" -gt 80 ] \
    && [ $(( ${#out} * 100 / ${#text} )) -lt "$MIN_RATIO" ]; then
-  printf '%s' "$out" | wl-copy >/dev/null 2>&1
+  printf '%s' "$out" | wl-copy 9>&- >/dev/null 2>&1
   indicator_off
   set_status held "Result held back, on the clipboard"
   notify-send -a "Typewriter" -u critical "Typewriter held back" \
@@ -455,7 +457,7 @@ if [ "$copy_only" != 1 ] && [ "${#text}" -gt 80 ] \
   exit 0
 fi
 
-printf '%s' "$out" | wl-copy >/dev/null 2>&1
+printf '%s' "$out" | wl-copy 9>&- >/dev/null 2>&1
 indicator_off
 set_status idle ""
 
