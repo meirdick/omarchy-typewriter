@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# Benchmark omarchy-refine backends and models on latency and correctness.
+# Benchmark omarchy-typewriter backends and models on latency and correctness.
 #   bench.sh cf @cf/meta/llama-3.2-3b-instruct @cf/...
 #   bench.sh ollama llama3.2:3b qwen3:4b
+#
+# Needs a working backend, so it is opt-in and is not part of `node --test`.
 set -uo pipefail
 R="$(dirname "$0")/../bin/omarchy-typewriter"
+
+[ "$#" -ge 2 ] || { echo "usage: $0 cf|ollama <model> [model...]" >&2; exit 2; }
 kind="$1"; shift
 
 SHORT='i beleive the meetng is on tusday'

@@ -36,10 +36,56 @@ ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
 no()   { printf '  \033[31m✗\033[0m %s\n' "$*"; }
 warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
 
+no_input() {
+  echo >&2
+  echo "$1: no answer, and stdin is at end of input." >&2
+  echo "Nothing was changed. Re-run on a terminal, or pass --yes to take the" >&2
+  echo "defaults deliberately." >&2
+  exit 1
+}
+
 confirm() {
   [ "$ASSUME_YES" = 1 ] && return 0
   if [ -t 0 ] && command -v gum >/dev/null 2>&1; then gum confirm "$1"; return $?; fi
-  local r; read -r -p "$1 [y/N] " r || return 1; [[ "$r" =~ ^[Yy] ]]
+  local r
+  read -r -p "$1 [y/N] " r || no_input "$1"
+  [[ "$r" =~ ^[Yy] ]]
+}
+
+# Every free-text prompt goes through this, so --yes covers all of them and an
+# end of input never turns into a silent default. The defaults here can mean a
+# 2 GB download and a sudo transaction, which is not something to assume.
+ask() { # variable-name default prompt
+  local __var="$1" __def="$2" __prompt="$3" __r
+  if [ "$ASSUME_YES" = 1 ]; then
+    printf '%s%s\n' "$__prompt" "${__def:-(none)} [--yes]"
+    printf -v "$__var" '%s' "$__def"
+    return 0
+  fi
+  read -r -p "$__prompt" __r || no_input "${__prompt% }"
+  printf -v "$__var" '%s' "${__r:-$__def}"
+}
+
+# The probe reports commands, and pacman installs packages. The two are not the
+# same name: wl-copy and wl-paste are not packages at all, and one unknown name
+# aborts the whole --needed transaction, so the mapping has to be explicit.
+pkg_for() { # command -> package providing it
+  case "$1" in
+    wl-copy|wl-paste) printf 'wl-clipboard\n' ;;
+    diff)             printf 'diffutils\n' ;;
+    hyprctl)          printf 'hyprland\n' ;;
+    notify-send)      printf 'libnotify\n' ;;
+    *)                printf '%s\n' "$1" ;;
+  esac
+}
+
+packages_for() { # commands... -> deduplicated package list, one per line
+  local c p out=()
+  for c in "$@"; do
+    p="$(pkg_for "$c")"
+    case " ${out[*]-} " in *" $p "*) ;; *) out+=("$p") ;; esac
+  done
+  printf '%s\n' "${out[@]+"${out[@]}"}"
 }
 
 # Every privileged or mutating command goes through this, so --dry-run is
@@ -53,9 +99,15 @@ run() {
 # --- probe -------------------------------------------------------------------
 # Read-only. Never changes anything, so the panel and --dry-run can both call it.
 probe() {
-  local missing=() b
-  for b in wtype wl-copy wl-paste jq curl; do
+  # Every command the tool calls on the normal path. diff is what words_changed
+  # runs, and its absence only shows up as a wrong count, so check it here.
+  local missing=() optional=() b
+  for b in wtype wl-copy wl-paste jq curl diff; do
     command -v "$b" >/dev/null 2>&1 || missing+=("$b")
+  done
+  # Degrade rather than fail: no window class detection, no desktop notifications.
+  for b in hyprctl notify-send; do
+    command -v "$b" >/dev/null 2>&1 || optional+=("$b")
   done
 
   local vulkan=false; command -v omarchy-hw-vulkan >/dev/null 2>&1 \
@@ -115,6 +167,7 @@ probe() {
 
   jq -n \
     --argjson missing "$(printf '%s\n' "${missing[@]+"${missing[@]}"}" | jq -R . | jq -s 'map(select(.!=""))')" \
+    --argjson optional_missing "$(printf '%s\n' "${optional[@]+"${optional[@]}"}" | jq -R . | jq -s 'map(select(.!=""))')" \
     --argjson vulkan "$vulkan" --arg gpu "$gpu" --arg vendor "$vendor" \
     --argjson ollama "$ollama_bin" --arg ollama_version "$ollama_ver" \
     --argjson ollama_vulkan "$ollama_vulkan" --argjson igpu_env "$igpu_env" \
@@ -124,7 +177,7 @@ probe() {
     --argjson pi "$pi_bin" --arg pi_model "$pi_model" \
     --arg cf_account "$cf_account" --argjson cf_token "$cf_token" \
     --arg cf_token_perms "$cf_perms" --argjson bindings "$binds" \
-    '{tools:{missing:$missing},
+    '{tools:{missing:$missing, optional_missing:$optional_missing},
       hardware:{vulkan:$vulkan, gpu:$gpu, vendor:$vendor, free_mb:($free_mb|tonumber)},
       local:{ollama:$ollama, version:$ollama_version, ollama_vulkan:$ollama_vulkan,
              igpu_env:$igpu_env, service_active:$service_active, api:$api,
@@ -139,6 +192,8 @@ show_probe() {
   bold "What is here now"
   local miss; miss="$(jq -r '.tools.missing|join(", ")' <<<"$p")"
   [ -z "$miss" ] && ok "required tools present" || no "missing tools: $miss"
+  local opt; opt="$(jq -r '.tools.optional_missing//[]|join(", ")' <<<"$p")"
+  [ -n "$opt" ] && warn "optional tools missing: $opt (terminal detection and notifications)"
 
   jq -e '.pi.installed' <<<"$p" >/dev/null \
     && { [ -n "$(jq -r '.pi.model' <<<"$p")" ] \
@@ -294,14 +349,25 @@ install_indicator() {
 
 # --- token -------------------------------------------------------------------
 set_cf_token() {
+  # --dry-run means nothing on disk changes, and a token file is still a change.
+  # Do not even ask, so no secret is left in a terminal that changed nothing.
+  if [ "$DRY" = 1 ]; then
+    printf '  would read a Cloudflare API token from the terminal and write it to %s (0600)\n' \
+      "$TOKEN_FILE"
+    return 0
+  fi
   mkdir -p "$CONFIG_DIR"; chmod 700 "$CONFIG_DIR"
   # Read from the terminal, never from argv: /proc/*/cmdline is world-readable.
   local t
   if [ -t 0 ]; then read -rsp "Cloudflare API token (Workers AI: Read): " t; echo
-  else read -r t; fi
+  else read -r t || t=""; fi
   [ -n "$t" ] || { echo "nothing entered"; return 1; }
-  printf '%s\n' "$t" > "$TOKEN_FILE"
-  chmod 600 "$TOKEN_FILE"
+  # Same pattern as set_config: create the file already at 0600 and move it into
+  # place, so it is never readable by anyone else, not even for an instant.
+  local tmp; tmp="$(mktemp "$TOKEN_FILE.XXXXXX")" || return 1
+  chmod 600 "$tmp"
+  printf '%s\n' "$t" > "$tmp" || { rm -f "$tmp"; return 1; }
+  mv "$tmp" "$TOKEN_FILE" || { rm -f "$tmp"; return 1; }
   echo "  written to $TOKEN_FILE (0600)"
 }
 
@@ -310,7 +376,9 @@ uninstall() {
   bold "Removing what setup added"
   remove_bindings
   [ -f "$IGPU_DROPIN" ] && confirm "Remove the ollama GPU drop-in at $IGPU_DROPIN?" \
-    && { run sudo rm -f "$IGPU_DROPIN"; run sudo systemctl daemon-reload; }
+    && { run sudo rm -f "$IGPU_DROPIN"; run sudo systemctl daemon-reload
+         # A reload alone leaves the old environment in the running unit.
+         run sudo systemctl try-restart ollama; }
   [ -d "$PLUGIN_DIR" ] && confirm "Remove the indicator plugin at $PLUGIN_DIR?" \
     && { run omarchy plugin remove meirdick.typewriter >/dev/null 2>&1 || true
          run rm -rf "$PLUGIN_DIR"; }
@@ -336,7 +404,13 @@ while [ $# -gt 0 ]; do
     --remove-bindings)    ACTION=remove-bindings ;;
     --set-cf-token)       ACTION=set-cf-token ;;
     --uninstall)          ACTION=uninstall ;;
-    --version)            printf '%s-setup %s\n' "$PROG" "0.1.0"; exit 0 ;;
+    --version)
+      # Read the version out of the tool rather than repeating it. A copy here
+      # is a copy that goes stale at the next release and nobody notices.
+      TOOL_PATH="$(command -v "$TOOL" 2>/dev/null)"
+      VER=""
+      [ -n "$TOOL_PATH" ] && VER="$(sed -n 's/^VERSION="\([^"]*\)".*/\1/p' "$TOOL_PATH" 2>/dev/null | head -1)"
+      printf '%s-setup %s\n' "$PROG" "${VER:-unknown}"; exit 0 ;;
     -h|--help)
       cat <<'USAGE'
 omarchy-typewriter-setup - set up omarchy-typewriter, one approved step at a time
@@ -378,7 +452,10 @@ miss="$(jq -r '.tools.missing|join(" ")' <<<"$P")"
 if [ -n "$miss" ]; then
   bold "Missing tools"
   echo "  $PROG cannot work without: $miss"
-  confirm "Install them with pacman?" && run sudo pacman -S --needed --noconfirm $miss
+  miss_pkgs="$(packages_for $miss | tr '\n' ' ')"; miss_pkgs="${miss_pkgs% }"
+  echo "  Provided by: $miss_pkgs"
+  confirm "Run: sudo pacman -S --needed $miss_pkgs ?" \
+    && run sudo pacman -S --needed --noconfirm $miss_pkgs
   echo
 fi
 
@@ -396,8 +473,7 @@ echo "  3. cloudflare  ~1.5s   Needs an account id and a token."
 echo "                         Your selected text is sent to Cloudflare."
 echo
 default_choice=2; [ "$pi_installed" = true ] && default_choice=1
-read -r -p "Which backend? [$default_choice] " choice
-choice="${choice:-$default_choice}"
+ask choice "$default_choice" "Which backend? [$default_choice] "
 echo
 
 case "$choice" in
@@ -411,11 +487,27 @@ case "$choice" in
     echo "  Pick a model. pi's own default provider took 15.5s on a paragraph"
     echo "  that claude-haiku-4-5 did in 1.5s, so this is worth choosing."
     echo
-    pi --list-models 2>/dev/null | head -1
-    pi --list-models 2>/dev/null | grep -iE 'haiku|flash|mini|nano' | head -8 | sed 's/^/  /'
+    # pi prints "No models available. Use /login..." on stdout, which looks like
+    # a menu entry if it is echoed straight through. A real entry is provider/id,
+    # so require at least one of those before offering a default nobody can use.
+    pi_models="$(pi --list-models 2>&1)"
+    # A listing is a header plus one row per model. With no provider
+    # authenticated pi prints "No models available. Use /login..." instead, and
+    # echoing that between the header and a default reads like a menu entry.
+    if [ -z "${pi_models//[[:space:]]/}" ] \
+       || printf '%s\n' "$pi_models" | grep -qi 'no models available' \
+       || [ "$(printf '%s\n' "$pi_models" | grep -c .)" -lt 2 ]; then
+      no "pi has no models available."
+      [ -n "${pi_models//[[:space:]]/}" ] \
+        && printf '%s\n' "$pi_models" | head -3 | sed 's/^/     pi said: /'
+      echo "  Authenticate a provider first: run pi, then /login."
+      echo "  Then run this setup again, or pick another backend."
+      exit 1
+    fi
+    printf '%s\n' "$pi_models" | head -1 | sed 's/^/  /'
+    printf '%s\n' "$pi_models" | grep -iE 'haiku|flash|mini|nano' | head -8 | sed 's/^/  /'
     echo
-    read -r -p "Model (provider/id) [anthropic/claude-haiku-4-5]: " m
-    m="${m:-anthropic/claude-haiku-4-5}"
+    ask m "anthropic/claude-haiku-4-5" "Model (provider/id) [anthropic/claude-haiku-4-5]: "
     echo "  Checking that it answers..."
     if [ "$DRY" = 1 ]; then
       echo "  would verify $m with one live call"
@@ -438,25 +530,43 @@ case "$choice" in
     vendor="$(jq -r '.hardware.vendor' <<<"$P")"
     vulkan="$(jq -r '.hardware.vulkan' <<<"$P")"
     echo "  GPU: $(jq -r '.hardware.gpu' <<<"$P")"
+    # One accelerated build per vendor. Naming a build here and then installing
+    # a different one is how the AMD path used to end on the CPU.
+    accel_pkg=""
     case "$vendor" in
-      nvidia) warn "NVIDIA: install ollama-cuda rather than ollama-vulkan." ;;
-      amd)    warn "AMD: ollama-rocm is usually the better build than vulkan." ;;
+      nvidia) accel_pkg=ollama-cuda ;;
+      amd)    accel_pkg=ollama-rocm ;;
+      intel)  [ "$vulkan" = true ] && accel_pkg=ollama-vulkan ;;
+    esac
+    case "$vendor" in
+      nvidia) echo "  NVIDIA: ollama-cuda is the accelerated build for this card." ;;
+      amd)    echo "  AMD: ollama-rocm is the accelerated build for this card." ;;
+      intel)  [ -n "$accel_pkg" ] \
+                && echo "  Intel: ollama-vulkan is the accelerated build for this card." ;;
     esac
     pkgs="ollama"
-    { [ "$vulkan" = true ] && [ "$vendor" = intel ]; } && pkgs="ollama ollama-vulkan"
-    if [ "$vulkan" != true ]; then
-      warn "No Vulkan support detected. Local will run on the CPU:"
+    [ -n "$accel_pkg" ] && pkgs="ollama $accel_pkg"
+    if [ -z "$accel_pkg" ]; then
+      warn "No accelerated build applies to this GPU. Local will run on the CPU:"
       echo "     about 7.5s a paragraph instead of 4.9s."
       confirm "Continue with CPU-only?" || exit 1
     fi
     echo
-    echo "  This adds packages. ollama-vulkan is additive - it does not replace"
-    echo "  ollama, it adds a Vulkan backend next to it."
+    if [ -n "$accel_pkg" ]; then
+      echo "  This adds packages. $accel_pkg is additive - it does not replace"
+      echo "  ollama, it adds an accelerated backend next to it."
+    else
+      echo "  This adds packages."
+    fi
     confirm "Run: sudo pacman -S --needed $pkgs ?" \
       && run sudo pacman -S --needed --noconfirm $pkgs
     echo
 
-    if [ "$(jq -r '.local.igpu_env' <<<"$P")" != true ] && [ "$vulkan" = true ]; then
+    # OLLAMA_IGPU_ENABLE is the Intel integrated-GPU switch for the Vulkan
+    # backend. It does nothing for CUDA or ROCm, so do not write it there.
+    wrote_dropin=0
+    if [ "$accel_pkg" = ollama-vulkan ] \
+       && [ "$(jq -r '.local.igpu_env' <<<"$P")" != true ]; then
       echo "  Ollama skips integrated GPUs unless told otherwise, and says"
       echo "  nothing when it falls back to the CPU. This drop-in fixes that:"
       echo
@@ -469,8 +579,13 @@ case "$choice" in
           printf '[Service]\nEnvironment="OLLAMA_IGPU_ENABLE=1"\n' \
             | sudo tee "$IGPU_DROPIN" >/dev/null
         fi
+        # Order matters: write the drop-in, reload so systemd sees it, then
+        # restart. enable --now starts a stopped unit and does nothing at all to
+        # a running one, so on its own the new environment never arrives.
         run sudo systemctl daemon-reload
-        run sudo systemctl enable --now ollama
+        run sudo systemctl enable ollama
+        run sudo systemctl restart ollama
+        wrote_dropin=1
         [ "$DRY" = 1 ] || wait_for_ollama 30 || \
           warn "ollama did not come up; check: systemctl status ollama"
       fi
@@ -489,8 +604,8 @@ case "$choice" in
     echo "       rewriting them: asked to rewrite \"is this working?\" it"
     echo "       replies \"No\"."
     echo
-    read -r -p "Model? [1] " mc
-    case "${mc:-1}" in
+    ask mc 1 "Model? [1] "
+    case "$mc" in
       2) model=qwen3:4b-instruct ;;
       3) model=llama3.2:3b ;;
       *) model=granite4:micro-h ;;
@@ -523,7 +638,19 @@ case "$choice" in
       P2="$(TYPEWRITER_OLLAMA_MODEL="$model" probe)"
       case "$(jq -r '.local.on_gpu' <<<"$P2")" in
         true)  ok "running on the GPU" ;;
-        false) no "running on the CPU - the drop-in above is what fixes this" ;;
+        false)
+          no "running on the CPU, not the GPU"
+          if [ "$wrote_dropin" = 1 ]; then
+            echo "     The drop-in is written and the service was restarted, so"
+            echo "     the card itself was not picked up. Check: journalctl -u ollama -b"
+          elif [ "$accel_pkg" = ollama-vulkan ]; then
+            echo "     OLLAMA_IGPU_ENABLE is what enables an Intel iGPU. Re-run"
+            echo "     setup and accept the drop-in step."
+          elif [ -n "$accel_pkg" ]; then
+            echo "     $accel_pkg is installed but not being used. Check: journalctl -u ollama -b"
+          else
+            echo "     Expected: no accelerated build applies to this GPU."
+          fi ;;
         *)     warn "could not tell" ;;
       esac
     fi
@@ -533,11 +660,9 @@ case "$choice" in
     bold "Cloudflare Workers AI"
     echo "  Your selected text is sent to Cloudflare on every use."
     echo
-    read -r -p "Account id: " acct
+    ask acct "" "Account id: "
     [ -n "$acct" ] || { echo "  no account id, stopping"; exit 1; }
-    if [ "$DRY" = 1 ]; then echo "  would prompt for a token and verify it"; else
-      set_cf_token || exit 1
-    fi
+    set_cf_token || exit 1
     set_config TYPEWRITER_BACKEND cloudflare
     set_config TYPEWRITER_CF_ACCOUNT "$acct"
     ;;
@@ -578,11 +703,22 @@ if [ "$DRY" = 1 ]; then
   echo "  would run a sample transform and report the time"
 else
   sample="Hi team, just wanted to follow up on the deploy we talked about last wek. The staging enviroment is still throwing the same 502 that we saw on tuesday."
-  if out="$("$TOOL" proof --text "$sample" --print --time 2>&1)"; then
+  # A demo must not become the user's data. The tool has no flag that suppresses
+  # recording, so send its history to a throwaway directory and put the undo
+  # buffer back afterwards. Otherwise `stats` counts this sentence and `undo`
+  # offers it instead of the user's real last edit.
+  sample_state="$(mktemp -d)"
+  undo_file="${XDG_RUNTIME_DIR:-/tmp}/$PROG/undo"
+  undo_saved=""
+  [ -f "$undo_file" ] && { undo_saved="$(mktemp)"; cp -- "$undo_file" "$undo_saved"; }
+  if out="$(XDG_STATE_HOME="$sample_state" "$TOOL" proof --text "$sample" --print --time 2>&1)"; then
     printf '%s\n' "$out" | sed 's/^/  /'
   else
     no "the sample failed:"; printf '%s\n' "$out" | sed 's/^/  /'
   fi
+  if [ -n "$undo_saved" ]; then mv -f -- "$undo_saved" "$undo_file"
+  else rm -f -- "$undo_file"; fi
+  rm -rf -- "$sample_state"
 fi
 
 echo

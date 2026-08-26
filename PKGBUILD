@@ -25,6 +25,10 @@ optdepends=(
 backup=("etc/$pkgname/config")
 install="$pkgname.install"
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+# PLACEHOLDER. 'SKIP' means makepkg verifies nothing, so a tampered or truncated
+# download builds without complaint. It can only become a real hash once the
+# v$pkgver tag exists on GitHub: push the tag, run `updpkgsums`, and commit the
+# result before publishing. Never push to the AUR with SKIP here. See BUILDING.md.
 sha256sums=('SKIP')
 
 package() {

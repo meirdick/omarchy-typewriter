@@ -2,8 +2,15 @@
 # Harder quality suite: cases where a weak model corrupts meaning rather than
 # just failing to follow format. Automated checks assert that things which must
 # survive verbatim actually did.
+#
+#   quality.sh @cf/meta/llama-4-scout-17b-16e-instruct [more models...]
+#
+# Needs a working Cloudflare backend. Exits non-zero if any case fails, so CI
+# wired to this fails on a bad model and on a dead backend alike.
 set -uo pipefail
 R="$(dirname "$0")/../bin/omarchy-typewriter"
+
+[ "$#" -gt 0 ] || { echo "usage: $0 <model> [model...]" >&2; exit 2; }
 
 declare -a NAME TEXT PRESET MUST
 add() { NAME+=("$1"); PRESET+=("$2"); TEXT+=("$3"); MUST+=("$4"); }
@@ -37,19 +44,39 @@ add donttouch proof \
 'The invoice totals $1,204.50 and is due net 30 from 2026-09-01.' \
 '\$1,204.50|net 30|2026-09-01'
 
+total_fails=0
 for M in "$@"; do
   echo "################ $M"
   fails=0
   for i in "${!NAME[@]}"; do
-    out="$(env TYPEWRITER_BACKEND=cloudflare TYPEWRITER_CF_MODEL="$M" timeout 120 "$R" "${PRESET[$i]}" --text "${TEXT[$i]}" --print 2>/dev/null)"
+    err="$(mktemp)"
+    out="$(env TYPEWRITER_BACKEND=cloudflare TYPEWRITER_CF_MODEL="$M" timeout 120 \
+             "$R" "${PRESET[$i]}" --text "${TEXT[$i]}" --print 2>"$err")"
+    rc=$?
     verdict="ok"
-    if [ "${MUST[$i]}" != '-' ]; then
+    if [ "$rc" -ne 0 ]; then
+      # A dead backend used to read as a pass on every case with no MUST
+      # pattern. Silence is not success.
+      verdict="ERROR(rc=$rc): $(head -c 120 "$err" | tr '\n' ' ')"
+      fails=$((fails+1))
+    elif [ -z "$out" ]; then
+      verdict="EMPTY"
+      fails=$((fails+1))
+    elif [ "${MUST[$i]}" != '-' ]; then
       IFS='|' read -ra pats <<< "${MUST[$i]}"
       for p in "${pats[@]}"; do
         grep -qE "$p" <<<"$out" || { verdict="LOST: $p"; fails=$((fails+1)); break; }
       done
     fi
+    rm -f "$err"
     printf '\n-- %-12s [%s]\n%s\n' "${NAME[$i]}" "$verdict" "$out"
   done
   printf '\n==== %s hard-check failures: %d\n\n' "$M" "$fails"
+  total_fails=$((total_fails + fails))
 done
+
+if [ "$total_fails" -gt 0 ]; then
+  echo "FAIL: $total_fails hard-check failure(s) across $# model(s)" >&2
+  exit 1
+fi
+echo "PASS: every hard check survived on all $# model(s)"

@@ -4,11 +4,18 @@
 /config/config
 *.token
 
-# makepkg output
-pkg/
-src/
+# makepkg output. Anchored to the repository root, so a future source tree
+# named src/ somewhere below is not swallowed with it.
+/pkg/
+/src/
 *.pkg.tar.zst
 *.pkg.tar.zst.sig
+
+# Release tarballs. The PKGBUILD downloads one from the GitHub tag and makepkg
+# leaves it here. A tracked tarball ends up inside the next tarball GitHub
+# makes, so every release would carry a copy of the one before it.
+*.tar.gz
+*.tar.gz.sig
 
 *.bak
 *.orig

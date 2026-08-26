@@ -74,6 +74,15 @@ TERMINAL_RE="${TYPEWRITER_TERMINAL_RE:-^(alacritty|foot(client)?|kitty|com\.mitc
 # Force the terminal key bindings when the window class cannot say. Needed off
 # Hyprland, where there is no class at all.
 FORCE_TERMINAL="${TYPEWRITER_TERMINAL:-}"
+# In a terminal a mouse selection belongs to the emulator, not to the program
+# inside it, so the cursor does not sit on the selection and Ctrl+Shift+V
+# appends instead of replacing. Nothing outside the terminal can delete that
+# selection, so the default is to hold the result on the clipboard. Set this to
+# 1 if you know your TUI puts the cursor on the selection and handles a paste.
+TERMINAL_PASTE="${TYPEWRITER_TERMINAL_PASTE:-0}"
+# Reachability probe for the auto backend. It runs on every keypress, so a dead
+# ollama must not cost a whole second before the next backend is tried.
+PROBE_TIMEOUT="${TYPEWRITER_PROBE_TIMEOUT:-0.4}"
 
 # Prompt lookup order. User prompts win, so a package upgrade never clobbers an
 # edited prompt, and the in-tree copy makes the script runnable from a checkout.
@@ -87,8 +96,22 @@ PROMPT_DIRS=(
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/$PROG"
 HISTORY="$STATE_DIR/history.jsonl"
 HISTORY_MAX="${TYPEWRITER_HISTORY_MAX:-500}"
-RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}/$PROG"
-mkdir -p "$RUNTIME_DIR" 2>/dev/null || true
+# The runtime directory holds the undo text and the request bodies, so it must
+# not be a path another local user can pre-create or point somewhere else. With
+# XDG_RUNTIME_DIR set it is already a private per-user directory. The /tmp
+# fallback is world-writable, so the path carries the uid, is created 700, and
+# anything we do not own is refused rather than used.
+if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+  RUNTIME_DIR="$XDG_RUNTIME_DIR/$PROG"
+else
+  RUNTIME_DIR="/tmp/$PROG-$(id -u)"
+fi
+mkdir -m 700 -p "$RUNTIME_DIR" 2>/dev/null || true
+if [ -L "$RUNTIME_DIR" ] || [ ! -d "$RUNTIME_DIR" ] || [ ! -O "$RUNTIME_DIR" ]; then
+  echo "$PROG: refusing to use $RUNTIME_DIR - it is not a directory you own" >&2
+  exit 1
+fi
+chmod 700 "$RUNTIME_DIR" 2>/dev/null || true
 
 # --- wordlist ----------------------------------------------------------------
 # Two kinds of rule, because they need different mechanisms:
@@ -351,16 +374,20 @@ trap 'cleanup; exit 130' INT TERM
 
 # --- arguments ---------------------------------------------------------------
 preset=""; inline=""; copy_only=0; show_time=0; given_text=""
-print_only=0; quiet_notify=0; render_prompt=0; select_backend=0; have_text=0
+print_only=0; quiet_notify=0; render_prompt=0; select_backend=0; have_text=0; no_record=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --copy)    copy_only=1 ;;
     --time)    show_time=1 ;;
-    --text)    [ $# -ge 2 ] || die "--text needs a value"
-               shift; given_text="$1"; have_text=1; copy_only=1; quiet_notify=1 ;;
-    --print)   print_only=1; copy_only=1; quiet_notify=1 ;;
-    --render-prompt) render_prompt=1; copy_only=1; quiet_notify=1 ;;
-    --select-backend) select_backend=1; copy_only=1; quiet_notify=1 ;;
+    # quiet_notify is set before the arity check, not after it: a scripted run
+    # that forgot the value must still report on stderr only.
+    --text)    copy_only=1; quiet_notify=1; OSD=""
+               [ $# -ge 2 ] || die "--text needs a value"
+               shift; given_text="$1"; have_text=1 ;;
+    --print)   print_only=1; copy_only=1; quiet_notify=1; OSD=""; no_record=1 ;;
+    --no-record) no_record=1 ;;
+    --render-prompt) render_prompt=1; copy_only=1; quiet_notify=1; OSD="" ;;
+    --select-backend) select_backend=1; copy_only=1; quiet_notify=1; OSD="" ;;
     --scope)   shift; SCOPE="${1-}" ;;
     --version) printf '%s %s\n' "$PROG" "$VERSION"; exit 0 ;;
     stats)     show_stats; exit 0 ;;
@@ -380,6 +407,10 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+# Before the scope check, not after it: a bad scope on a scripted run used to
+# reach die() while the indicator was still live and put a card on screen.
+[ "$quiet_notify" = 1 ] && OSD=""
+
 case "$SCOPE" in
   auto|selection|line|all) ;;
   words) SCOPE=words:1 ;;
@@ -387,8 +418,6 @@ case "$SCOPE" in
     || die "words scope needs a number, got '${SCOPE#words:}'" ;;
   *) die "unknown scope: $SCOPE (use auto, selection, line, words:N, or all)" ;;
 esac
-
-[ "$quiet_notify" = 1 ] && OSD=""
 
 # Resolve the instruction. A preset name is used to build a path, so it is
 # validated before it touches the filesystem - otherwise "../../../etc/passwd"
@@ -484,20 +513,29 @@ no_selection_terminal="select the text with the mouse first - in a terminal noth
 if [ "$have_text" = 1 ]; then
   text="$given_text"
   class=""
+  win_addr=""
 else
 
 # Check initialClass too: an app that renames its window at runtime would
 # otherwise be misread, and a terminal that is missed gets a bare Ctrl+C, which
 # is SIGINT rather than a copy.
-class="$(hyprctl activewindow -j 2>/dev/null \
+# The address is read in the same call: it is the window's identity, unique and
+# stable for its lifetime, where a class is shared by every window of an app.
+# The model call takes seconds, so this is what the paste target is checked
+# against afterwards.
+activewin="$(hyprctl activewindow -j 2>/dev/null || true)"
+class="$(printf '%s' "$activewin" \
          | jq -r '[.class // "", .initialClass // ""] | join(" ")' 2>/dev/null || true)"
+win_addr="$(printf '%s' "$activewin" | jq -r '.address // ""' 2>/dev/null || true)"
 
 # The hotkey's own modifiers are still physically held. wtype's virtual keyboard
 # is a separate device, so SUPER+ALT would combine with what we send.
 sleep "$PASTE_DELAY"
 
 sentinel="__${PROG}_sentinel_$$__"
-saved_clip="$(paste_text)"
+# The x guard keeps the trailing newlines a command substitution would eat, so
+# a restored clipboard is byte-identical to the one that was taken.
+saved_clip="$(paste_text; printf x)"; saved_clip="${saved_clip%x}"
 clip_was_text=1
 timeout 2 wl-paste --list-types 2>/dev/null | grep -qi '^text/' || clip_was_text=0
 text=""
@@ -524,13 +562,20 @@ copy_selection() {
   else
     wtype -M ctrl -k c -m ctrl
   fi
-  local current tries
-  tries=$(( CAPTURE_TIMEOUT_MS / 40 ))
-  [ "$tries" -lt 1 ] && tries=1
-  for _ in $(seq 1 "$tries"); do
-    sleep 0.04
+  # Poll against a deadline, not a count. Counting polls ignored the cost of
+  # spawning wl-paste, so a 640ms budget took closer to 870ms - on every run
+  # where nothing was selected.
+  local current now rem deadline
+  deadline=$(( $(date +%s%N) + CAPTURE_TIMEOUT_MS * 1000000 ))
+  while :; do
+    now=$(date +%s%N)
+    rem=$(( (deadline - now) / 1000000 ))
+    [ "$rem" -gt 40 ] && rem=40
+    [ "$rem" -lt 0 ] && rem=0
+    sleep "$(printf '0.%03d' "$rem")"
     current="$(paste_text)"
     if [ "$current" != "$sentinel" ]; then text="$current"; return 0; fi
+    [ "$(date +%s%N)" -ge "$deadline" ] && break
   done
   # Grace check: a slow app whose copy lands just after the deadline would
   # otherwise arrive after restore_clip and clobber the real clipboard.
@@ -646,7 +691,8 @@ cf_ready() { [ -n "$CF_ACCOUNT" ] && [ -n "$(cf_token)" ]; }
 pi_ready() { [ -n "$PI_MODEL" ] && command -v pi >/dev/null 2>&1; }
 ollama_ready() {
   local tags
-  tags="$(curl -sf -m 1 "$OLLAMA_URL/api/tags" 2>/dev/null)" || return 1
+  tags="$(curl -sf --connect-timeout "$PROBE_TIMEOUT" -m "$PROBE_TIMEOUT" \
+    "$OLLAMA_URL/api/tags" 2>/dev/null)" || return 1
   printf '%s' "$tags" | jq -e --arg m "$OLLAMA_MODEL" \
     '[.models[]?.name] | index($m) != null' >/dev/null 2>&1
 }
@@ -656,7 +702,6 @@ if [ "$BACKEND" = auto ]; then
   elif pi_ready; then BACKEND=pi
   elif cf_ready; then BACKEND=cloudflare
   elif [ -n "${ANTHROPIC_API_KEY:-}" ]; then BACKEND=anthropic
-  elif [ -n "$PI_MODEL" ] && command -v pi >/dev/null 2>&1; then BACKEND=pi
   else
     restore_clip
     set_status needs-setup "No backend configured"
@@ -680,9 +725,24 @@ case "$BACKEND" in
     # stops a confused model from running on. Floor of 1024: a model that reasons
     # before answering spends the budget on reasoning tokens and returns nothing
     # if the cap is sized to the input.
+    #
+    # The ceiling is what the model will accept for max_tokens, and it decides
+    # how much text this backend can handle at all. At roughly four characters
+    # per token, a ceiling of 4096 covers about 16k characters; three characters
+    # per token is the margin that also covers code and markup, which tokenize
+    # denser than prose. So the effective input limit here is (ceiling - 256) * 3,
+    # well under the global MAX_CHARS of 20000. Refusing up front is better than
+    # spending 15s to come back truncated and blame the model for running out of
+    # room. Raise TYPEWRITER_CF_MAX_TOKENS if your model takes a bigger cap.
+    cf_ceiling="${TYPEWRITER_CF_MAX_TOKENS:-4096}"
+    cf_max_chars=$(( (cf_ceiling - 256) * 3 ))
+    [ "${#text}" -le "$cf_max_chars" ] || die "selection is ${#text} chars; the \
+cloudflare backend tops out near $cf_max_chars because its output cap is \
+$cf_ceiling tokens. Use a backend with more room, or raise \
+TYPEWRITER_CF_MAX_TOKENS if $CF_MODEL accepts it."
     cap=$(( ${#text} / 2 + 256 ))
     [ "$cap" -lt 1024 ] && cap=1024
-    [ "$cap" -gt 4096 ] && cap=4096
+    [ "$cap" -gt "$cf_ceiling" ] && cap=$cf_ceiling
     body_file="$(mktemp "$RUNTIME_DIR/body.XXXXXX")"
     chmod 600 "$body_file"
     jq -n --arg s "$system" --arg t "$payload" --argjson c "$cap" \
@@ -721,10 +781,17 @@ case "$BACKEND" in
     [ "$(printf '%s' "$resp" | jq -r '.stop_reason // ""')" = max_tokens ] && truncated=1
     ;;
   ollama)
-    body="$(jq -n --arg m "$OLLAMA_MODEL" --arg s "$system" --arg t "$payload" \
-      '{model:$m, system:$s, prompt:$t, stream:false, think:false, options:{temperature:0.2}}')"
-    resp="$(curl -sS -m 120 "$OLLAMA_URL/api/generate" -d "$body")" \
-      || die "ollama request failed - is the service running?"
+    # Through a file, not -d: an argument is visible in ps to every user on the
+    # machine, and the argument here is the text being refined.
+    body_file="$(mktemp "$RUNTIME_DIR/body.XXXXXX")"
+    chmod 600 "$body_file"
+    jq -n --arg m "$OLLAMA_MODEL" --arg s "$system" --arg t "$payload" \
+      '{model:$m, system:$s, prompt:$t, stream:false, think:false, options:{temperature:0.2}}' \
+      > "$body_file"
+    resp="$(curl -sS -m 120 "$OLLAMA_URL/api/generate" \
+      -H "content-type: application/json" --data-binary "@$body_file")" \
+      || { rm -f "$body_file"; die "ollama request failed - is the service running?"; }
+    rm -f "$body_file"
     err="$(printf '%s' "$resp" | jq -r '.error // empty')"
     [ -z "$err" ] || die "ollama: $err"
     out="$(printf '%s' "$resp" | jq -r '.response')"
@@ -760,7 +827,23 @@ strip_wrapper() { # tag
     out="$(printf '%s' "$out" | sed -e '1d' -e '$d')"
   fi
 }
+
+# Trailing whitespace: only a leading blank line, and only the tail of the text.
+# This runs before the wrapper checks, not just after them: a closing tag
+# followed by a blank line left tail -1 returning nothing, so the wrapper was
+# never recognised and </text> was pasted into the document.
+trim_edges() {
+  out="$(printf '%s' "$out" | sed -e '1{/^[[:space:]]*$/d}')"
+  # Everything after the last non-whitespace character: trailing blank lines and
+  # any trailing spaces on the final line. Spaces that end an earlier line are
+  # left alone, because two of them are a markdown hard line break.
+  out="${out%"${out##*[![:space:]]}"}"
+}
+
+trim_edges
 strip_wrapper text
+
+trim_edges
 
 # A fence pair is only ours to remove if the input had none.
 if ! printf '%s' "$text" | grep -q '^```'; then
@@ -771,8 +854,7 @@ if ! printf '%s' "$text" | grep -q '^```'; then
   fi
 fi
 
-# Trailing whitespace: last line only, and only a leading blank line.
-out="$(printf '%s' "$out" | sed -e '${s/[[:space:]]*$//}' -e '1{/^[[:space:]]*$/d}')"
+trim_edges
 out="$(apply_replacements "$out")"
 [ -n "$out" ] || { restore_clip; die "empty response"; }
 
@@ -794,17 +876,59 @@ fi
 # instead of transforming it. Do not overwrite the document with that - leave it
 # on the clipboard and say so, so nothing is lost either way.
 hold_back=0
-[ "${truncated:-0}" = 1 ] && hold_back=1
-[ "${#text}" -gt 80 ] && [ $(( ${#out} * 100 / ${#text} )) -lt "$MIN_RATIO" ] && hold_back=1
+hold_reason=""
+hold_short="Held back — on clipboard"
+hold_glyph="󰅚"
+hold_urgency=critical
+
+if [ "${truncated:-0}" = 1 ]; then
+  hold_back=1
+  hold_reason="The model ran out of room and the result is cut off."
+elif [ "${#text}" -gt 80 ] && [ $(( ${#out} * 100 / ${#text} )) -lt "$MIN_RATIO" ]; then
+  hold_back=1
+  hold_reason="$(printf 'The result was %s chars from %s.' "${#out}" "${#text}")"
+fi
+
+# In a terminal the selection belongs to the emulator, not to the program inside
+# it. The cursor never moves to the selection, so Ctrl+Shift+V inserts at the
+# cursor and the user gets the original text and the rewrite, one after the
+# other. Nothing outside the terminal can delete that selection, so do not
+# pretend: hand the result over on the clipboard and say why.
+if [ "$hold_back" = 0 ] && [ "$copy_only" != 1 ] && [ "$TERMINAL_PASTE" != 1 ] \
+   && is_terminal "$class"; then
+  hold_back=1
+  hold_reason="A terminal cannot replace a selection from outside - a paste would append to it. The result is on the clipboard, ready to paste with Ctrl+Shift+V."
+  hold_short="On clipboard — paste it"
+  hold_glyph="󰆒"
+  hold_urgency=normal
+fi
+
+# The model call takes 1.5s to 15s. If the user moved to another window in that
+# time, the old code pasted into whatever was focused now. The address is the
+# window's own identity, so a changed or missing one means the target is gone.
+if [ "$hold_back" = 0 ] && [ "$copy_only" != 1 ] && [ -n "${win_addr:-}" ]; then
+  now_addr="$(hyprctl activewindow -j 2>/dev/null | jq -r '.address // ""' 2>/dev/null || true)"
+  if [ "$now_addr" != "$win_addr" ]; then
+    hold_back=1
+    hold_reason="The focused window changed while the model was working, so nothing was pasted."
+    hold_short="Window changed — on clipboard"
+  fi
+fi
+
 if [ "$copy_only" != 1 ] && [ "$hold_back" = 1 ]; then
+  # The result is the clipboard now, deliberately. Without this the EXIT trap
+  # runs restore_clip and puts the original text back, so every message saying
+  # "it is on the clipboard" would be false.
+  RESTORE_CLIPBOARD=0
   printf '%s' "$out" | wl-copy 9>&- >/dev/null 2>&1
+  in_flight=0
   indicator_stop
-  set_status held "Result held back, on the clipboard"
-  osd_show held "󰅚" "Held back — on clipboard" 2500
-  [ "$NOTIFY" = 1 ] && notify-send -a "Typewriter" -u critical "Typewriter held back" \
-    "$( [ "${truncated:-0}" = 1 ] \
-        && printf 'The model ran out of room and the result is cut off.' \
-        || printf 'The result was %s chars from %s.' "${#out}" "${#text}" ) Nothing was replaced; it is on the clipboard." 2>/dev/null || true
+  set_status held "$hold_short"
+  osd_show held "$hold_glyph" "$hold_short" 2500
+  record_run "${preset:-inline}" "$BACKEND" "${used_model:-}" "$text" "$out" "$elapsed_ms" held
+  { [ "${quiet_notify:-0}" = 1 ] || [ "$NOTIFY" != 1 ]; } \
+    || notify-send -a "Typewriter" -u "$hold_urgency" "Typewriter held back" \
+       "$hold_reason Nothing was replaced; it is on the clipboard." 2>/dev/null || true
   exit 0
 fi
 
@@ -812,8 +936,10 @@ in_flight=0
 indicator_stop
 set_status idle ""
 changed="$(words_changed "$text" "$out")"
-record_run "${preset:-inline}" "$BACKEND" "${used_model:-}" "$text" "$out" "$elapsed_ms" ok
-save_undo "$text"
+if [ "$no_record" = 0 ]; then
+  record_run "${preset:-inline}" "$BACKEND" "${used_model:-}" "$text" "$out" "$elapsed_ms" ok
+  save_undo "$text"
+fi
 [ "$quiet_notify" = 1 ] || indicator_done "$elapsed_ms" "$changed"
 
 if [ "$print_only" = 1 ]; then
@@ -824,6 +950,9 @@ fi
 printf '%s' "$out" | wl-copy 9>&- >/dev/null 2>&1
 
 if [ "$copy_only" = 1 ]; then
+  # Same as the hold path: --copy asked for the result on the clipboard, so the
+  # EXIT trap must not put the old contents back over it.
+  RESTORE_CLIPBOARD=0
   { [ "$quiet_notify" = 1 ] || [ "$NOTIFY" != 1 ]; } \
     || notify-send -a "Typewriter" -t 2500 "Typewriter" "Copied to clipboard" 2>/dev/null || true
   exit 0

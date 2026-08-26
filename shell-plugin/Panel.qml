@@ -1,4 +1,4 @@
-// A deliberately plain indicator: one dot and one word, floating on the
+// A deliberately plain indicator: one dot and one line of text, floating on the
 // desktop. No card, no border, no background - Omarchy's own OSD already does
 // the card, and this exists because that was too heavy for a 600ms operation.
 //
@@ -13,11 +13,21 @@ import QtQuick
 PanelWindow {
   id: root
 
+  // Distance from the bottom edge. Small on purpose: this is a transient hint,
+  // not a dialog, and sitting near the edge keeps it out of the way of whatever
+  // the user is actually reading. Raise it if your bar is at the bottom.
+  property int bottomEdgeMargin: 14
+
   property string label: ""
   property string mode: "idle"      // idle | working | done | failed | held
-  property int    closeAfter: 0
 
-  visible: mode !== "idle"
+  // The window has to outlive the mode by the length of the fade, or the fade
+  // never renders: binding visible straight to the mode unmapped the surface on
+  // the same frame the opacity animation started, so the indicator vanished
+  // instead of fading. showing lags mode, and fadeTimer closes the gap.
+  property bool showing: false
+  visible: showing
+
   anchors { top: true; bottom: true; left: true; right: true }
   color: "transparent"
   exclusionMode: ExclusionMode.Ignore
@@ -25,6 +35,28 @@ PanelWindow {
   WlrLayershell.layer: WlrLayer.Overlay
   WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
   mask: Region {}
+
+  readonly property int fadeMs: 140
+
+  onModeChanged: {
+    if (mode !== "idle") {
+      fadeTimer.stop()
+      showing = true
+      row.opacity = 1
+    } else if (showing) {
+      row.opacity = 0
+      fadeTimer.restart()
+    }
+    // Stopping the breath leaves the dot at whatever size it had reached.
+    if (mode !== "working") dot.scale = 1.0
+  }
+
+  Timer {
+    id: fadeTimer
+    interval: root.fadeMs + 20
+    repeat: false
+    onTriggered: root.showing = false
+  }
 
   readonly property color accent: {
     if (mode === "failed") return "#f38ba8"
@@ -39,11 +71,10 @@ PanelWindow {
     // ms arrives as a string over IPC; declaring it int silently yielded 0,
     // so the auto-hide never armed and the indicator stayed on screen.
     function show(mode: string, label: string, ms: string): string {
-      root.mode = mode
       root.label = label
+      root.mode = mode
       var d = parseInt(ms, 10)
       if (isNaN(d)) d = 0
-      root.closeAfter = d
       hideTimer.stop()
       if (d > 0) { hideTimer.interval = d; hideTimer.restart() }
       return "ok"
@@ -58,10 +89,12 @@ PanelWindow {
     id: row
     anchors.horizontalCenter: parent.horizontalCenter
     anchors.bottom: parent.bottom
-    anchors.bottomMargin: 96
+    anchors.bottomMargin: root.bottomEdgeMargin
     spacing: 10
-    opacity: root.visible ? 1 : 0
-    Behavior on opacity { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
+    opacity: 0
+    Behavior on opacity {
+      NumberAnimation { duration: root.fadeMs; easing.type: Easing.OutCubic }
+    }
 
     // The dot breathes while the model is working and holds still otherwise,
     // so "thinking" and "finished" are distinguishable without reading.
@@ -71,21 +104,39 @@ PanelWindow {
       anchors.verticalCenter: parent.verticalCenter
       color: root.accent
 
-      SequentialAnimation on scale {
+      // Targeted rather than a "SequentialAnimation on scale" value source, so
+      // scale stays an ordinary property that can be reset once the loop stops.
+      // As a value source it kept ownership of scale and the dot sat frozen
+      // mid-breath, larger than an idle dot, for as long as "done" was up.
+      SequentialAnimation {
+        id: breathe
         running: root.mode === "working"
         loops: Animation.Infinite
-        NumberAnimation { from: 1.0; to: 1.9; duration: 520; easing.type: Easing.InOutSine }
-        NumberAnimation { from: 1.9; to: 1.0; duration: 520; easing.type: Easing.InOutSine }
+        NumberAnimation {
+          target: dot; property: "scale"
+          from: 1.0; to: 1.9; duration: 520; easing.type: Easing.InOutSine
+        }
+        NumberAnimation {
+          target: dot; property: "scale"
+          from: 1.9; to: 1.0; duration: 520; easing.type: Easing.InOutSine
+        }
+        onRunningChanged: if (!running) dot.scale = 1.0
       }
-      onVisibleChanged: if (root.mode !== "working") scale = 1.0
     }
 
     Text {
+      id: labelText
       anchors.verticalCenter: parent.verticalCenter
       text: root.label
       color: root.accent
       font.pixelSize: 13
       font.weight: Font.Medium
+      // failed carries the backend's own error message, which can be a whole
+      // API response. With no cap it ran off the edge of the screen, taking
+      // the start of the message with it.
+      width: Math.min(implicitWidth, root.width * 0.6)
+      elide: Text.ElideRight
+      maximumLineCount: 1
       // A soft shadow instead of a background, so it stays readable on both a
       // light and a dark desktop without drawing a box.
       style: Text.Raised

@@ -7,7 +7,8 @@
 #
 # Run `omarchy-typewriter-setup` to fill this in interactively.
 
-# Which backend to use: auto | local | pi | cloudflare | anthropic
+# Which backend to use: auto | local | ollama | pi | cloudflare | anthropic
+# "local" and "ollama" are two names for the same backend.
 # auto order: local (if the model is pulled) -> pi -> cloudflare -> anthropic
 TYPEWRITER_BACKEND=auto
 
@@ -34,7 +35,7 @@ TYPEWRITER_OLLAMA_URL=http://localhost:11434
 #   granite-4.0-h-micro              2.33s   5/5, nine times cheaper
 TYPEWRITER_CF_ACCOUNT=
 TYPEWRITER_CF_MODEL=@cf/meta/llama-4-scout-17b-16e-instruct
-#TYPEWRITER_CF_TOKEN_FILE=~/.config/omarchy-typewriter/cloudflare.token
+#TYPEWRITER_CF_TOKEN_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-typewriter/cloudflare.token"
 
 # --- pi (agent CLI) ----------------------------------------------------------
 # Uses whatever providers you already authenticated in pi, so it needs no token
@@ -92,7 +93,7 @@ TYPEWRITER_NOTIFY=1
 
 # Terms to protect and replacements to enforce. See the Wordlist section of the
 # README. One rule per line: a bare word is protected, "x => y" is a rule.
-#TYPEWRITER_WORDLIST=~/.config/omarchy-typewriter/wordlist
+#TYPEWRITER_WORDLIST="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-typewriter/wordlist"
 
 # How many writing samples to send from a preset's <preset>.samples/ directory.
 #TYPEWRITER_MAX_SAMPLES=5
@@ -102,7 +103,7 @@ TYPEWRITER_NOTIFY=1
 #TYPEWRITER_HISTORY_MAX=500
 
 # Where presets are read from before /usr/share and the checkout.
-#TYPEWRITER_PROMPT_DIR=~/.config/omarchy-typewriter/prompts
+#TYPEWRITER_PROMPT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-typewriter/prompts"
 
 # Seconds before omarchy-typewriter-status ages a non-idle state back to idle,
 # so a stale failure cannot sit in your bar.
@@ -121,6 +122,11 @@ TYPEWRITER_RESTORE_CLIPBOARD=1
 # Window classes treated as terminals, which need Ctrl+Shift+C and Ctrl+Shift+V.
 # An unlisted terminal gets a bare Ctrl+C, which is SIGINT rather than a copy.
 # Anchored, so it matches a whole class name - an unanchored pattern once
-# matched "Serious-Sam" via "rio". Setting this REPLACES the built-in list; the
-# default is in bin/omarchy-typewriter.
-#TYPEWRITER_TERMINAL_RE='^(alacritty|foot|kitty|ghostty|konsole|xterm)$'
+# matched "Serious-Sam" via "rio".
+#
+# Setting this REPLACES the built-in list rather than adding to it, so start
+# from the default below and extend it. Dropping a terminal you actually use is
+# how you get the bare Ctrl+C this comment warns about: ghostty reports the
+# class com.mitchellh.ghostty, and footclient is not foot. This is the built-in
+# default, copied from bin/omarchy-typewriter.
+#TYPEWRITER_TERMINAL_RE='^(alacritty|foot(client)?|kitty|com\.mitchellh\.ghostty|ghostty|wezterm|org\.wezfurlong\..*|rio|contour|konsole|org\.kde\.konsole|xterm|urxvt|rxvt.*|st|stterm|terminator|tilix|dev\.warp\.Warp|terminology|eterm|org\.gnome\.(Terminal|Console)|.*[-.]terminal)$'

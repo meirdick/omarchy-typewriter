@@ -18,10 +18,28 @@ PROG="omarchy-typewriter"
 STATUS_FILE="${XDG_RUNTIME_DIR:-/tmp}/$PROG/status.json"
 IDLE='{"text":"","alt":"idle","class":"idle","tooltip":""}'
 
-# A failure from an hour ago is not the current state. Anything that is not
-# idle ages back to idle, so a stale error cannot sit in the bar indefinitely.
-STALE_AFTER="${TYPEWRITER_STATUS_STALE_AFTER:-120}"
+# Read the same three layers the tool reads, highest first: environment, user
+# config, system config. Reading only the environment meant that setting
+# TYPEWRITER_STATUS_STALE_AFTER in the config file did nothing, because a bar
+# launches this without one.
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/$PROG"
+__env_stale="${TYPEWRITER_STATUS_STALE_AFTER:-}"
+[ -r "/etc/$PROG/config" ] && . "/etc/$PROG/config"
+[ -r "$CONFIG_DIR/config" ] && . "$CONFIG_DIR/config"
+[ -n "$__env_stale" ] && TYPEWRITER_STATUS_STALE_AFTER="$__env_stale"
+unset __env_stale
 
+# A failure from an hour ago is not the current state, so working, done, held
+# and failed all age back to idle and a stale error cannot sit in the bar.
+STALE_AFTER="${TYPEWRITER_STATUS_STALE_AFTER:-120}"
+# A non-numeric value would make jq --argjson fail and every read fall back to
+# idle, which is exactly the symptom this setting exists to avoid.
+case "$STALE_AFTER" in ''|*[!0-9]*) STALE_AFTER=120 ;; esac
+
+# needs-setup is the exception: it is not stale news, it is a standing
+# condition. There is no backend configured, and that stays true until someone
+# runs the wizard. Ageing it out turned a permanent misconfiguration into a bar
+# that looks idle, so the tool appeared to do nothing for no visible reason.
 emit() {
   if [ ! -r "$STATUS_FILE" ] || [ ! -s "$STATUS_FILE" ]; then
     printf '%s\n' "$IDLE"; return
@@ -29,7 +47,8 @@ emit() {
   # A missing timestamp means the file was written by an older version, so it
   # cannot be aged and must not be trusted as current either.
   jq -c --argjson now "$(date +%s)" --argjson max "$STALE_AFTER" \
-    'if .alt != "idle" and (.at == null or ($now - .at) > $max)
+    'if .alt != "idle" and .alt != "needs-setup"
+        and (.at == null or ($now - .at) > $max)
      then {text:"", alt:"idle", class:"idle", tooltip:""} else . end' \
     "$STATUS_FILE" 2>/dev/null || printf '%s\n' "$IDLE"
 }

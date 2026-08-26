@@ -6,7 +6,7 @@
   "author": "Meir Dick",
   "license": "MIT",
   "homepage": "https://github.com/meirdick/omarchy-typewriter",
-  "description": "Minimal bottom-centre indicator for omarchy-typewriter: a pulsing dot and the name of the preset that is running. Driven over IPC by the omarchy-typewriter command; does nothing on its own.",
+  "description": "Minimal bottom-centre indicator for omarchy-typewriter: a coloured dot and one line of text. The dot breathes and the text names the preset while a run is in flight, then reports how long it took, why it failed, or that the result was held back. Driven over IPC by the omarchy-typewriter command; does nothing on its own.",
   "kinds": ["panel"],
   "keepLoaded": true,
   "entryPoints": { "panel": "Panel.qml" }

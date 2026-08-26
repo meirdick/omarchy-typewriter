@@ -32,7 +32,8 @@ privacy, and how much setup they need.
 | `anthropic` | ~1.5s | `ANTHROPIC_API_KEY` in the environment |
 
 `local` runs entirely on your machine. The other three send the selected text
-to a third party.
+to a third party. `TYPEWRITER_BACKEND` also accepts `ollama` as another name
+for `local`, and `auto` to pick the first one that is ready.
 
 Times are medians measured on one laptop — an Intel Arc B390 iGPU — on a
 327-character paragraph. The wizard finishes by running a sample and reporting
@@ -169,7 +170,8 @@ box or a Slack message is taken whole without the quoted thread below it. In a
 code editor that means everything above the cursor, so set
 `TYPEWRITER_AUTO_FALLBACK=line` there.
 
-`--scope selection|line|words:N|all` overrides per run.
+`--scope auto|selection|line|words|words:N|all` overrides per run. A bare
+`words` means `words:1`.
 
 **In a terminal, select with the mouse.** There is no way to make a selection
 from outside: `Shift+Home` either scrolls the scrollback or is forwarded to the
@@ -259,10 +261,13 @@ so a preset you write gets one too.
 
 For a bar, `omarchy-typewriter-status` prints one Waybar-shaped object and
 follows with `--follow`. It answers `idle` when the tool has never run, so a bar
-module works before first use. States are `idle`, `working`, `held`, `failed`,
-`needs-setup`, and a non-idle state ages back to idle after two minutes so a
-stale error cannot sit there. The tooltip carries the focused window's class,
-which is the answer to the most likely problem — see below.
+module works before first use. States are `idle`, `working`, `held`, `failed`
+and `needs-setup`. A stale state ages back to idle after two minutes
+(`TYPEWRITER_STATUS_STALE_AFTER`, read from the config file as well as the
+environment) so an old error cannot sit there. `needs-setup` is the exception
+and never ages: no backend is configured, and that stays true until you run the
+wizard. The tooltip carries the focused window's class, which is the answer to
+the most likely problem — see below.
 
 ## Limits worth knowing
 
@@ -271,8 +276,12 @@ cannot reliably separate instructions from data. Text is wrapped in `<text>`
 tags with the instruction repeated afterwards, which is what stops short,
 question-like selections being answered instead of rewritten. It is a
 mitigation, not a guarantee. Every failure is one visible, reversible paste, and
-`Ctrl+Z` undoes it. A result under 20% of the input length is not pasted at all —
-it goes to the clipboard with a notification.
+`Ctrl+Z` undoes it. A result under 20% of the input length is not pasted at all
+(`TYPEWRITER_MIN_RATIO`) — it goes to the clipboard with a notification.
+Selections of 80 characters or fewer are exempt, because a short one honestly
+does get much shorter. `--print`, `--copy` and `--text` skip the hold-back
+entirely: there is no document to protect, so a scripted run always returns
+what the model said.
 
 **Terminal detection is a regex over window classes.** A terminal that is not
 matched gets a bare `Ctrl+C`, which is SIGINT rather than a copy. The status
@@ -298,17 +307,34 @@ in Gmail or Docs replaces it with unformatted text.
 
 ```bash
 bash -n bin/omarchy-typewriter          # syntax
-node --test test/*.test.js              # 15 tests, no model, no network
+node --test test/*.test.js              # 42 tests, no model, no network
 ```
+
+The suite needs `bash`, `jq` and `node`. It shells out to the real script, so
+it needs the same `jq` the tool itself depends on. It never needs a model, a
+network or a Wayland session, and it writes nothing outside its own temporary
+directories.
 
 Neither the tests nor the harnesses are in the package; clone the repo for
 those.
 
-The tests shell out to the real script through four seams: `--print`,
-`--render-prompt` (the exact system prompt and payload it would send),
-`--select-backend`, and `--probe --json` on the setup script. `--render-prompt`
-is the important one — the prompt structure is the part most easily broken by a
-careless edit and has no other test.
+The tests reach the script through four seams:
+
+- `--render-prompt` prints the exact system prompt and payload it would send.
+  This is the important one: the prompt structure is the part most easily
+  broken by a careless edit and has no other test.
+- `--select-backend` prints the backend `auto` resolved to and stops.
+- `--text TEXT --print` supplies the input and prints the result, instead of
+  reading the selection and pressing keys.
+- A directory of stub executables on `PATH` stands in for `curl` and
+  `wl-copy`, which is what lets the tests exercise the whole run — wordlist
+  replacements included — with no model and no clipboard.
+
+One behaviour has no seam. The hold-back is only evaluated on a run that would
+paste, and every flag that makes a run safe to script also turns the hold-back
+off, so the threshold itself is asserted against the source rather than
+observed. A `--dry-run` that took the paste decision and printed it instead of
+acting on it would close that gap.
 
 Two live harnesses, opt-in because they need a working backend:
 
