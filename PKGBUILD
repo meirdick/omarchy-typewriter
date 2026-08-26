@@ -44,6 +44,9 @@ package() {
   install -Dm644 "completions/$pkgname.bash" \
     "$pkgdir/usr/share/bash-completion/completions/$pkgname"
 
+  install -d "$pkgdir/usr/share/$pkgname/shell-plugin"
+  install -m644 -t "$pkgdir/usr/share/$pkgname/shell-plugin" shell-plugin/*
+
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
   install -Dm644 LICENSE   "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

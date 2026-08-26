@@ -275,6 +275,23 @@ install_bindings() { # block-function-name
   command -v hyprctl >/dev/null && hyprctl reload >/dev/null 2>&1
 }
 
+# --- indicator plugin --------------------------------------------------------
+# A minimal dot-and-label surface, as an Omarchy shell plugin. Without it the
+# tool falls back to Omarchy's block OSD, and then to hyprctl notify.
+PLUGIN_SRC="/usr/share/$PROG/shell-plugin"
+[ -d "$PLUGIN_SRC" ] || PLUGIN_SRC="$SELF_DIR/../shell-plugin"
+PLUGIN_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/meirdick.typewriter"
+
+install_indicator() {
+  [ -d "$PLUGIN_SRC" ] || { echo "  no plugin source at $PLUGIN_SRC"; return 1; }
+  run mkdir -p "$PLUGIN_DIR"
+  if [ "$DRY" = 1 ]; then echo "  would copy the indicator plugin to $PLUGIN_DIR"; return 0; fi
+  cp "$PLUGIN_SRC"/manifest.json "$PLUGIN_SRC"/Panel.qml "$PLUGIN_DIR/" || return 1
+  omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true
+  omarchy plugin enable meirdick.typewriter >/dev/null 2>&1 || true
+  echo "  installed and enabled"
+}
+
 # --- token -------------------------------------------------------------------
 set_cf_token() {
   mkdir -p "$CONFIG_DIR"; chmod 700 "$CONFIG_DIR"
@@ -294,6 +311,9 @@ uninstall() {
   remove_bindings
   [ -f "$IGPU_DROPIN" ] && confirm "Remove the ollama GPU drop-in at $IGPU_DROPIN?" \
     && { run sudo rm -f "$IGPU_DROPIN"; run sudo systemctl daemon-reload; }
+  [ -d "$PLUGIN_DIR" ] && confirm "Remove the indicator plugin at $PLUGIN_DIR?" \
+    && { run omarchy plugin remove meirdick.typewriter >/dev/null 2>&1 || true
+         run rm -rf "$PLUGIN_DIR"; }
   confirm "Remove $CONFIG_DIR (config and Cloudflare token)?" \
     && run rm -rf "$CONFIG_DIR"
   local m="${TYPEWRITER_OLLAMA_MODEL:-granite4:micro-h}"
@@ -543,6 +563,16 @@ else
 fi
 
 echo
+if command -v omarchy-shell >/dev/null 2>&1; then
+  bold "Indicator"
+  echo "  A small dot and the preset's name at the bottom of the screen while"
+  echo "  the model works. It installs an Omarchy shell plugin under"
+  echo "  ~/.config/omarchy/plugins/ - the only thing setup puts there."
+  echo "  Without it you get Omarchy's standard block OSD instead."
+  confirm "Install it?" && install_indicator
+  echo
+fi
+
 bold "Trying it"
 if [ "$DRY" = 1 ]; then
   echo "  would run a sample transform and report the time"

@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "meirdick.typewriter",
+  "name": "Typewriter indicator",
+  "version": "0.1.0",
+  "author": "Meir Dick",
+  "license": "MIT",
+  "homepage": "https://github.com/meirdick/omarchy-typewriter",
+  "description": "Minimal bottom-centre indicator for omarchy-typewriter: a pulsing dot and the name of the preset that is running. Driven over IPC by the omarchy-typewriter command; does nothing on its own.",
+  "kinds": ["panel"],
+  "keepLoaded": true,
+  "entryPoints": { "panel": "Panel.qml" }
+}
