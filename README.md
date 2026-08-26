@@ -9,11 +9,12 @@ Built for Wayland. Developed on Omarchy 4 with Hyprland.
 ## Install
 
 ```bash
-git clone https://github.com/meirdick/omarchy-typewriter.git
-cd omarchy-typewriter
-makepkg -si
+yay -S omarchy-typewriter      # once it is on the AUR
 omarchy-typewriter-setup
 ```
+
+Building from a checkout instead — see `BUILDING.md`, which covers the
+release and AUR steps.
 
 The wizard asks before every step, prints the exact command for anything
 needing sudo, and `--dry-run` prints the whole plan while changing nothing.
@@ -128,9 +129,20 @@ separately before deleting a downloaded model.
 
 ## Keybindings
 
-There is no supported way for a package to ship Hyprland keybindings, so setup
-offers to append a delimited block to your own `bindings.lua`. The default is
-one key, `SUPER+ALT+R`, which unbinds nothing.
+**The wizard's keybinding step is Omarchy-specific.** `o.bind` and `hl.unbind`
+are Omarchy 4's Lua config API, not Hyprland's — plain Hyprland reads
+`hyprland.conf` and has no Lua layer. On Omarchy, setup offers to append a
+delimited block to your own `bindings.lua`; the default is one key,
+`SUPER+ALT+R`, which unbinds nothing.
+
+Anywhere else, bind it yourself. Plain Hyprland:
+
+```
+bind = SUPER ALT, R, exec, omarchy-typewriter proof
+```
+
+Sway, niri and the rest: whatever your compositor's config calls the same thing.
+The command is all that matters.
 
 A five-preset set on `SUPER+ALT+1..5` is offered separately because it unbinds
 Hyprland's group-window switching, which you do not get back until you remove
@@ -143,12 +155,28 @@ Prefer to do it yourself: `omarchy-typewriter-setup --print-bindings`.
 
 ## Bar integration
 
-`omarchy-typewriter-status` prints one Waybar-shaped object and follows with
-`--follow`. It answers `idle` when the tool has never run, so a bar module works
-before first use. States are `idle`, `working`, `held`, `failed`, `needs-setup`.
+While a run is in flight the tool shows a pill at the bottom centre of the
+screen naming what it is doing — `Proofreading…`, `Rewriting…` — with the
+preset's own glyph. On Omarchy this drives the shell's existing OSD, the same
+surface the volume and brightness popups use, which costs about 44ms and needs
+no background process. Elsewhere it falls back to `hyprctl notify`, whose
+position Hyprland does not let anyone configure.
 
-The tooltip carries the focused window's class, which is the answer to the most
-likely problem — see below.
+Each preset declares its glyph in its own file:
+
+```markdown
+# Proofreading
+<!-- icon: 󰓆 -->
+```
+
+so a preset you write gets one too.
+
+For a bar, `omarchy-typewriter-status` prints one Waybar-shaped object and
+follows with `--follow`. It answers `idle` when the tool has never run, so a bar
+module works before first use. States are `idle`, `working`, `held`, `failed`,
+`needs-setup`, and a non-idle state ages back to idle after two minutes so a
+stale error cannot sit there. The tooltip carries the focused window's class,
+which is the answer to the most likely problem — see below.
 
 ## Limits worth knowing
 
@@ -164,9 +192,21 @@ it goes to the clipboard with a notification.
 matched gets a bare `Ctrl+C`, which is SIGINT rather than a copy. The status
 tooltip shows the focused class so you can extend `TYPEWRITER_TERMINAL_RE`.
 
-**Slow apps.** If an Electron app reports "nothing selected" for text that was
-selected, it did not put the selection on the clipboard within
+**Slow apps.** If an app reports "nothing selected" for text that was selected,
+it did not put the selection on the clipboard within
 `TYPEWRITER_CAPTURE_TIMEOUT_MS` (default 640). The error names the setting.
+
+**Compositors other than Hyprland.** The window class comes from `hyprctl`.
+Without it the tool cannot tell a terminal from anything else, and it refuses
+rather than guessing — because guessing wrong means sending a bare `Ctrl+C`,
+which is SIGINT to whatever is running. Force it with `TYPEWRITER_TERMINAL=1`
+or `0` if you know better.
+
+**Clipboard managers.** If you run one, both the text you selected and the
+model's replacement enter its history permanently.
+
+**Rich text.** Capture and paste are plain text. Refining a formatted selection
+in Gmail or Docs replaces it with unformatted text.
 
 ## Development
 
@@ -174,6 +214,9 @@ selected, it did not put the selection on the clipboard within
 bash -n bin/omarchy-typewriter          # syntax
 node --test test/*.test.js              # 15 tests, no model, no network
 ```
+
+Neither the tests nor the harnesses are in the package; clone the repo for
+those.
 
 The tests shell out to the real script through four seams: `--print`,
 `--render-prompt` (the exact system prompt and payload it would send),

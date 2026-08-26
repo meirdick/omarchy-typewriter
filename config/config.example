@@ -36,6 +36,14 @@ TYPEWRITER_CF_ACCOUNT=
 TYPEWRITER_CF_MODEL=@cf/meta/llama-4-scout-17b-16e-instruct
 #TYPEWRITER_CF_TOKEN_FILE=~/.config/omarchy-typewriter/cloudflare.token
 
+# --- pi (agent CLI) ----------------------------------------------------------
+# Uses whatever providers you already authenticated in pi, so it needs no token
+# of its own. Pin a model: pi's default provider took 15.5s on a paragraph that
+# claude-haiku-4-5 did in 1.5s. See `pi --list-models`.
+# The tool always runs pi with --no-tools and --no-session. pi ships read, bash,
+# edit and write tools, and this feeds it text you did not write.
+TYPEWRITER_PI_MODEL=
+
 # --- Anthropic ---------------------------------------------------------------
 # Uses ANTHROPIC_API_KEY from the environment.
 TYPEWRITER_ANTHROPIC_MODEL=claude-haiku-4-5
@@ -75,11 +83,33 @@ TYPEWRITER_MIN_RATIO=20
 TYPEWRITER_MAX_CHARS=20000
 
 # Show the on-screen indicator while working. 1 or 0.
+# On Omarchy this is the shell's bottom-centre OSD; elsewhere hyprctl notify.
 TYPEWRITER_INDICATOR=1
+
+# Desktop notification on failure. 1 or 0. On Omarchy the failure already shows
+# in the bottom-centre pill, so this only applies elsewhere.
+TYPEWRITER_NOTIFY=1
+
+# Where presets are read from before /usr/share and the checkout.
+#TYPEWRITER_PROMPT_DIR=~/.config/omarchy-typewriter/prompts
+
+# Seconds before omarchy-typewriter-status ages a non-idle state back to idle,
+# so a stale failure cannot sit in your bar.
+#TYPEWRITER_STATUS_STALE_AFTER=120
+
+# Force terminal key bindings (Ctrl+Shift+C/V) on or off, for compositors where
+# the window class cannot be read. 1, 0, or unset to detect.
+#TYPEWRITER_TERMINAL=
+
+# Seconds to allow a single wl-paste before giving up on it.
+#TYPEWRITER_PASTE_TIMEOUT=3
 
 # Restore whatever was on the clipboard before the run. 1 or 0.
 TYPEWRITER_RESTORE_CLIPBOARD=1
 
 # Window classes treated as terminals, which need Ctrl+Shift+C and Ctrl+Shift+V.
 # An unlisted terminal gets a bare Ctrl+C, which is SIGINT rather than a copy.
-#TYPEWRITER_TERMINAL_RE='alacritty|foot|kitty|ghostty|wezterm|rio|contour|terminal'
+# Anchored, so it matches a whole class name - an unanchored pattern once
+# matched "Serious-Sam" via "rio". Setting this REPLACES the built-in list; the
+# default is in bin/omarchy-typewriter.
+#TYPEWRITER_TERMINAL_RE='^(alacritty|foot|kitty|ghostty|konsole|xterm)$'
