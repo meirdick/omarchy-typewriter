@@ -160,6 +160,31 @@ update"*:
 It silently renamed the company. Proper nouns a model has never seen are exactly
 what it will confidently "fix".
 
+## At a shell prompt
+
+The clipboard route cannot work in a terminal, so the shell prompt gets its own
+mechanism. Add to your `~/.bashrc`:
+
+```bash
+source /usr/share/omarchy-typewriter/shell/typewriter.bash
+```
+
+`Ctrl-x Ctrl-t` then rewrites the line you are typing, in place:
+
+```
+git comit -m "fixs teh bug in teh parser"     →
+git commit -m "fixes the bug in the parser"
+```
+
+There is a `typewriter.zsh` beside it doing the same through ZLE. Set
+`TYPEWRITER_SHELL_PRESET` to use something other than `proof`.
+
+This works where the clipboard cannot because readline hands the line over and
+takes a new one back — no clipboard, no synthetic keystrokes, no selection. It
+covers the shell prompt only. A full-screen TUI in a terminal, like an editor or
+Claude Code, has neither readline nor a visible selection, and remains a
+clipboard-and-paste job.
+
 ## Scopes
 
 With text highlighted, that selection is used.

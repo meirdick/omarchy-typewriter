@@ -104,8 +104,8 @@ PanelWindow {
     anchors.horizontalCenter: parent.horizontalCenter
     anchors.bottom: parent.bottom
     anchors.bottomMargin: root.bottomEdgeMargin
-    implicitWidth: row.implicitWidth + 26
-    implicitHeight: row.implicitHeight + 14
+    width: row.implicitWidth + 26
+    height: row.implicitHeight + 14
     opacity: root.showing ? 1 : 0
     Behavior on opacity { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
 
