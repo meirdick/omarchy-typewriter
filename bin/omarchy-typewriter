@@ -223,6 +223,10 @@ else
   die "usage: $PROG <preset> | $PROG -- \"instruction\""
 fi
 
+if [ "$have_text" = 0 ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
+  die "this needs a Wayland session (WAYLAND_DISPLAY is unset)"
+fi
+
 # --- one run at a time -------------------------------------------------------
 # Without this a second keypress mid-run sends its copy keystroke into a window
 # that the first run is still pasting into.
@@ -425,6 +429,7 @@ fi
 if [ "$select_backend" = 1 ]; then printf '%s\n' "$BACKEND"; exit 0; fi
 
 in_flight=1
+truncated=0
 indicator_on "$label…" "${glyph:-󰏫}" 0
 set_status working "$label"
 started_ns=$(date +%s%N)
@@ -454,6 +459,9 @@ case "$BACKEND" in
       die "workers ai: $(printf '%s' "$resp" | jq -r '[.errors[]?.message] | join("; ")')"
     fi
     out="$(printf '%s' "$resp" | jq -r '.result.response // .result.choices[0].message.content // ""')"
+    case "$(printf '%s' "$resp" | jq -r '.result.choices[0].finish_reason // ""')" in
+      length) truncated=1 ;;
+    esac
     ;;
   anthropic)
     [ -n "${ANTHROPIC_API_KEY:-}" ] || die "ANTHROPIC_API_KEY is not set"
@@ -471,6 +479,7 @@ case "$BACKEND" in
     err="$(printf '%s' "$resp" | jq -r 'if .type=="error" then .error.message else empty end')"
     [ -z "$err" ] || die "api error: $err"
     out="$(printf '%s' "$resp" | jq -r '[.content[] | select(.type=="text") | .text] | join("")')"
+    [ "$(printf '%s' "$resp" | jq -r '.stop_reason // ""')" = max_tokens ] && truncated=1
     ;;
   ollama)
     body="$(jq -n --arg m "$OLLAMA_MODEL" --arg s "$system" --arg t "$payload" \
@@ -543,14 +552,18 @@ fi
 # A result far shorter than the input usually means the model answered the text
 # instead of transforming it. Do not overwrite the document with that - leave it
 # on the clipboard and say so, so nothing is lost either way.
-if [ "$copy_only" != 1 ] && [ "${#text}" -gt 80 ] \
-   && [ $(( ${#out} * 100 / ${#text} )) -lt "$MIN_RATIO" ]; then
+hold_back=0
+[ "${truncated:-0}" = 1 ] && hold_back=1
+[ "${#text}" -gt 80 ] && [ $(( ${#out} * 100 / ${#text} )) -lt "$MIN_RATIO" ] && hold_back=1
+if [ "$copy_only" != 1 ] && [ "$hold_back" = 1 ]; then
   printf '%s' "$out" | wl-copy 9>&- >/dev/null 2>&1
   indicator_off
   set_status held "Result held back, on the clipboard"
   indicator_on "Held back — on clipboard" "󰅚" 2500
   [ "$NOTIFY" = 1 ] && notify-send -a "Typewriter" -u critical "Typewriter held back" \
-    "The result was ${#out} chars from ${#text}. Nothing was replaced; it is on the clipboard." 2>/dev/null || true
+    "$( [ "${truncated:-0}" = 1 ] \
+        && printf 'The model ran out of room and the result is cut off.' \
+        || printf 'The result was %s chars from %s.' "${#out}" "${#text}" ) Nothing was replaced; it is on the clipboard." 2>/dev/null || true
   exit 0
 fi
 

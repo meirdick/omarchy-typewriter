@@ -23,10 +23,12 @@ optdepends=(
   'bash-completion: preset name completion'
 )
 backup=("etc/$pkgname/config")
-source=()
+install="$pkgname.install"
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
 
 package() {
-  cd "$startdir"
+  cd "$srcdir/$pkgname-$pkgver"
 
   install -Dm755 "bin/$pkgname" "$pkgdir/usr/bin/$pkgname"
   for helper in setup status; do

@@ -191,11 +191,13 @@ set_config() { # key value
   [ "$DRY" = 1 ] && { printf '  would set %s=%s\n' "$1" "$2"; return 0; }
   mkdir -p "$CONFIG_DIR"; chmod 700 "$CONFIG_DIR"
   [ -f "$CONFIG" ] || { : > "$CONFIG"; chmod 600 "$CONFIG"; }
-  if grep -qE "^$1=" "$CONFIG"; then
-    sed -i "s|^$1=.*|$1=$2|" "$CONFIG"
-  else
-    printf '%s=%s\n' "$1" "$2" >> "$CONFIG"
-  fi
+  # %q so a value with a space, a quote or a metacharacter cannot become a
+  # command when the tool sources this file. Rewrite the whole file rather than
+  # substituting through sed, whose delimiters the value could break.
+  local tmp; tmp="$(mktemp "$CONFIG.XXXXXX")" || return 1
+  chmod 600 "$tmp"
+  { [ -f "$CONFIG" ] && grep -v "^$1=" "$CONFIG"; printf '%s=%q\n' "$1" "$2"; } > "$tmp"
+  mv "$tmp" "$CONFIG"
   printf '  set %s=%s\n' "$1" "$2"
 }
 
@@ -229,10 +231,23 @@ o.bind("SUPER + ALT + 5", "Bullet selection", "omarchy-typewriter bullets")
 BLOCK
 }
 
+markers_balanced() {
+  local b e
+  b="$(grep -cF -- "$BEGIN_MARK" "$1" 2>/dev/null || echo 0)"
+  e="$(grep -cF -- "$END_MARK" "$1" 2>/dev/null || echo 0)"
+  [ "$b" = "$e" ]
+}
+
 remove_bindings() {
   [ -r "$BINDINGS" ] || { echo "no $BINDINGS"; return 0; }
   grep -qF -- "$BEGIN_MARK" "$BINDINGS" || { echo "no block to remove"; return 0; }
-  run cp "$BINDINGS" "$BINDINGS.bak.$(date +%s)"
+  markers_balanced "$BINDINGS" || {
+    echo "refusing to edit $BINDINGS: the managed block has an unmatched marker."
+    echo "Remove the block by hand, then run this again."
+    return 1
+  }
+  run cp "$BINDINGS" "$BINDINGS.bak.$(date +%s)" || {
+    echo "backup failed, not editing $BINDINGS"; return 1; }
   if [ "$DRY" = 1 ]; then echo "  would delete the managed block"; return 0; fi
   sed -i "/^$BEGIN_MARK\$/,/^$END_MARK\$/d" "$BINDINGS"
   # The block is appended after a blank line; drop a trailing run of blanks.
@@ -244,7 +259,12 @@ remove_bindings() {
 install_bindings() { # block-function-name
   mkdir -p "$(dirname "$BINDINGS")"
   [ -f "$BINDINGS" ] || : > "$BINDINGS"
-  run cp "$BINDINGS" "$BINDINGS.bak.$(date +%s)"
+  markers_balanced "$BINDINGS" || {
+    echo "refusing to edit $BINDINGS: the managed block has an unmatched marker."
+    return 1
+  }
+  run cp "$BINDINGS" "$BINDINGS.bak.$(date +%s)" || {
+    echo "backup failed, not editing $BINDINGS"; return 1; }
   if [ "$DRY" = 1 ]; then echo "  would append:"; "$1" | sed 's/^/    /'; return 0; fi
   # Idempotent: strip any previous block, then squeeze the trailing blank lines
   # it left behind, so writing twice produces a byte-identical file.
@@ -284,18 +304,46 @@ uninstall() {
 }
 
 # --- arguments ---------------------------------------------------------------
-case "${1:-}" in
-  --probe) shift; [ "${1:-}" = --json ] && shift; probe; exit 0 ;;
-  --dry-run) DRY=1; shift ;;
-  --yes) ASSUME_YES=1; shift ;;
-  --print-bindings) bindings_block; exit 0 ;;
-  --print-bindings-all) bindings_block_full; exit 0 ;;
-  --remove-bindings) remove_bindings; exit 0 ;;
-  --set-cf-token) set_cf_token; exit $? ;;
-  --uninstall) uninstall; exit 0 ;;
-  -h|--help) sed -n '8,12p' "$0" | sed 's/^# \?//'; exit 0 ;;
-  "") ;;
-  *) echo "unknown option: $1" >&2; exit 1 ;;
+ACTION=wizard
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --probe)              ACTION=probe ;;
+    --json)               : ;;
+    --dry-run)            DRY=1 ;;
+    --yes)                ASSUME_YES=1 ;;
+    --print-bindings)     ACTION=print-bindings ;;
+    --print-bindings-all) ACTION=print-bindings-all ;;
+    --remove-bindings)    ACTION=remove-bindings ;;
+    --set-cf-token)       ACTION=set-cf-token ;;
+    --uninstall)          ACTION=uninstall ;;
+    --version)            printf '%s-setup %s\n' "$PROG" "0.1.0"; exit 0 ;;
+    -h|--help)
+      cat <<'USAGE'
+omarchy-typewriter-setup - set up omarchy-typewriter, one approved step at a time
+
+  (no flags)             run the interactive wizard
+  --dry-run              print the whole plan, change nothing
+  --yes                  accept every prompt (combine with care)
+  --probe [--json]       report what is installed, change nothing
+  --print-bindings       print the one-key binding block
+  --print-bindings-all   print the five-preset binding block
+  --remove-bindings      remove the managed block from bindings.lua
+  --set-cf-token         store a Cloudflare token, read from the terminal
+  --uninstall            reverse what setup did
+USAGE
+      exit 0 ;;
+    *) echo "unknown option: $1" >&2; exit 1 ;;
+  esac
+  shift
+done
+
+case "$ACTION" in
+  probe)               probe; exit 0 ;;
+  print-bindings)      bindings_block; exit 0 ;;
+  print-bindings-all)  bindings_block_full; exit 0 ;;
+  remove-bindings)     remove_bindings; exit 0 ;;
+  set-cf-token)        set_cf_token; exit $? ;;
+  uninstall)           uninstall; exit 0 ;;
 esac
 
 # --- the wizard --------------------------------------------------------------

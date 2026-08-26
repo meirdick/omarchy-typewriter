@@ -1,0 +1,26 @@
+pkgbase = omarchy-typewriter
+	pkgdesc = Proofread or rewrite selected text in place with a keypress, on Wayland
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/meirdick/omarchy-typewriter
+	install = omarchy-typewriter.install
+	arch = any
+	license = MIT
+	depends = bash
+	depends = jq
+	depends = curl
+	depends = wl-clipboard
+	depends = wtype
+	optdepends = omarchy: bottom-centre on-screen indicator and keybinding installation
+	optdepends = ollama: local backend, nothing leaves the machine
+	optdepends = ollama-vulkan: GPU acceleration for the local backend on Intel and AMD
+	optdepends = hyprland: window-class detection, without which terminals are not detected
+	optdepends = libnotify: failure notifications
+	optdepends = gum: prompts in the setup wizard
+	optdepends = inotify-tools: event-driven bar updates instead of polling
+	optdepends = bash-completion: preset name completion
+	backup = etc/omarchy-typewriter/config
+	source = omarchy-typewriter-0.1.0.tar.gz::https://github.com/meirdick/omarchy-typewriter/archive/refs/tags/v0.1.0.tar.gz
+	sha256sums = SKIP
+
+pkgname = omarchy-typewriter

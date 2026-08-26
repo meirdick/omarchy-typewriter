@@ -1,0 +1,25 @@
+post_remove() {
+  cat <<'MSG'
+
+omarchy-typewriter is removed, but the setup wizard could have created
+things outside the package. If you used it, these may still be present:
+
+  /etc/systemd/system/ollama.service.d/omarchy-typewriter-igpu.conf
+      forces OLLAMA_IGPU_ENABLE=1 on ollama.service
+
+  ~/.config/hypr/bindings.lua
+      a "-- BEGIN omarchy-typewriter" block, now binding a missing command
+
+  ~/.config/omarchy-typewriter/
+      settings and, if you configured Cloudflare, an API token
+
+  the local model, if you pulled one:  ollama rm granite4:micro-h
+
+MSG
+}
+
+post_upgrade() {
+  # Prompts under /usr/share are replaced on upgrade. Anything the user wrote
+  # in ~/.config/omarchy-typewriter/prompts/ takes precedence and is untouched.
+  :
+}
