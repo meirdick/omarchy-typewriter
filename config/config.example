@@ -90,6 +90,13 @@ TYPEWRITER_INDICATOR=1
 # in the bottom-centre pill, so this only applies elsewhere.
 TYPEWRITER_NOTIFY=1
 
+# How many writing samples to send from a preset's <preset>.samples/ directory.
+#TYPEWRITER_MAX_SAMPLES=5
+
+# How many runs to keep in the history used by `omarchy-typewriter stats`.
+# Metadata only - counts and timings, never the text you refined.
+#TYPEWRITER_HISTORY_MAX=500
+
 # Where presets are read from before /usr/share and the checkout.
 #TYPEWRITER_PROMPT_DIR=~/.config/omarchy-typewriter/prompts
 

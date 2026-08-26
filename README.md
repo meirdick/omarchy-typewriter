@@ -80,6 +80,53 @@ There is also a one-off form that needs no file:
 omarchy-typewriter -- "translate to spanish"
 ```
 
+## Stats
+
+```
+$ omarchy-typewriter stats
+runs            5
+words refined   97
+words changed   45
+time in models  8.1s
+median run      1.08s
+```
+
+Plus a per-preset breakdown, so you can see which typewriters you actually use.
+The history holds **metadata only** — counts and timings, never the text. Text
+is what would make a log like this a liability.
+
+`omarchy-typewriter undo` puts the text from before the last run back on your
+clipboard. That one copy lives in the runtime directory and dies with your
+session, so it is available exactly when you need it and never persists.
+
+## Teaching it your voice
+
+Any preset can carry writing samples. Put `.md` or `.txt` files in a directory
+named after the preset, beside the prompt:
+
+```
+~/.config/omarchy-typewriter/prompts/
+├── rewrite.md
+└── rewrite.samples/
+    └── voice.md
+```
+
+They are appended to the instruction as style references — sentence length,
+vocabulary, how formal you are — and explicitly marked as data, never
+instructions. Up to five by default (`TYPEWRITER_MAX_SAMPLES`).
+
+How much difference this makes depends on the model. Measured on the same
+sentence:
+
+| | Output |
+|---|---|
+| no samples | *"I think we should consider rolling back the deploy since staging is still throwing 502 errors and it might be related to something we changed."* |
+| samples, `llama-4-scout` | *"I think we should consider rolling back the deploy, as staging is still throwing those 502 errors, which might be related to our recent changes."* |
+| samples, `claude-haiku-4-5` | *"I think we should roll back the deploy. Staging is still throwing 502 errors and it's likely related to something we changed."* |
+
+The sample voice was short and declarative. Haiku adopted it; scout barely did.
+If voice matters to you, this is a reason to use a stronger backend.
+
 ## Scopes
 
 With text highlighted, that selection is used.

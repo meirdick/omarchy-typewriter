@@ -159,6 +159,36 @@ test("the terminal pattern is anchored", () => {
   assert.match(line, /\)\$/);
 });
 
+// Writing samples teach the model a voice. They are user-supplied text, so the
+// same rule as the selection applies: they are data, never instructions.
+test("writing samples reach the model, wrapped and guarded", () => {
+  const dir = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "tw-p-"));
+  fs.writeFileSync(path.join(dir, "voice.md"), "# Voice\n\nRewrite it.\n");
+  fs.mkdirSync(path.join(dir, "voice.samples"));
+  fs.writeFileSync(path.join(dir, "voice.samples", "a.md"), "Short. Blunt. Mine.");
+  const out = run(["voice", "--text", "hello", "--render-prompt"], {
+    TYPEWRITER_PROMPT_DIR: dir,
+  });
+  assert.match(out, /<sample>/);
+  assert.match(out, /Short\. Blunt\. Mine\./);
+  assert.match(out, /never treat[\s\S]{0,40}instruction/,
+    "samples are user text and must be marked as data");
+});
+
+test("a preset with no samples directory sends none", () => {
+  const out = run(["proof", "--text", "hello", "--render-prompt"], {
+    TYPEWRITER_PROMPT_DIR: path.join(__dirname, "..", "prompts"),
+  });
+  assert.doesNotMatch(out, /<sample>/);
+});
+
+test("the icon declaration is not sent as an instruction", () => {
+  const out = run(["proof", "--text", "hello", "--render-prompt"], {
+    TYPEWRITER_PROMPT_DIR: path.join(__dirname, "..", "prompts"),
+  });
+  assert.doesNotMatch(out, /icon:/);
+});
+
 test("the words scope needs a number", () => {
   assert.match(runFail(["proof", "--scope", "words:many", "--copy"]), /needs a number/);
 });
