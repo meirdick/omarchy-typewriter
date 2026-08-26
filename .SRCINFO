@@ -21,6 +21,6 @@ pkgbase = omarchy-typewriter
 	optdepends = bash-completion: preset name completion
 	backup = etc/omarchy-typewriter/config
 	source = omarchy-typewriter-0.1.0.tar.gz::https://github.com/meirdick/omarchy-typewriter/archive/refs/tags/v0.1.0.tar.gz
-	sha256sums = SKIP
+	sha256sums = f5d17d34036f0afaf954ed0c1e5bea96abbb17745a0ef38324f337f2f4916a6e
 
 pkgname = omarchy-typewriter
