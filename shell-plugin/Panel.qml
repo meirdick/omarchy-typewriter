@@ -95,42 +95,56 @@ PanelWindow {
 
   Timer { id: hideTimer; repeat: false; onTriggered: root.mode = "idle" }
 
-  Row {
-    id: row
+  // A capsule outline around the dot and the label. Still no card: the fill is
+  // transparent, so the desktop shows through and this reads as a floating hint
+  // rather than a window. The outline is what makes the two elements one object
+  // instead of a stray dot beside stray text.
+  Item {
+    id: bubble
     anchors.horizontalCenter: parent.horizontalCenter
     anchors.bottom: parent.bottom
     anchors.bottomMargin: root.bottomEdgeMargin
-    spacing: 10
-    opacity: 0
-    Behavior on opacity {
-      NumberAnimation { duration: root.fadeMs; easing.type: Easing.OutCubic }
+    implicitWidth: row.implicitWidth + 26
+    implicitHeight: row.implicitHeight + 14
+    opacity: root.showing ? 1 : 0
+    Behavior on opacity { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
+
+    Rectangle {
+      anchors.fill: parent
+      radius: height / 2
+      color: "transparent"
+      border.width: 1
+      // White while working, so "in progress" reads at a glance without
+      // needing the text. The terminal states take their own colour, because
+      // by then the outcome matters more than the fact that it ran.
+      border.color: root.mode === "working"
+                    ? Qt.rgba(1, 1, 1, 0.34)
+                    : Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.45)
+      Behavior on border.color { ColorAnimation { duration: 160 } }
     }
 
-    // The dot breathes while the model is working and holds still otherwise,
-    // so "thinking" and "finished" are distinguishable without reading.
+  Row {
+    id: row
+    anchors.centerIn: parent
+    spacing: 10
+
+    // Breathes while the model works, still otherwise, so "thinking" and
+    // "finished" are distinguishable without reading the label.
     Rectangle {
       id: dot
       width: 9; height: 9; radius: 4.5
       anchors.verticalCenter: parent.verticalCenter
       color: root.accent
 
-      // Targeted rather than a "SequentialAnimation on scale" value source, so
-      // scale stays an ordinary property that can be reset once the loop stops.
-      // As a value source it kept ownership of scale and the dot sat frozen
-      // mid-breath, larger than an idle dot, for as long as "done" was up.
       SequentialAnimation {
         id: breathe
         running: root.mode === "working"
         loops: Animation.Infinite
-        NumberAnimation {
-          target: dot; property: "scale"
-          from: 1.0; to: 1.9; duration: 520; easing.type: Easing.InOutSine
-        }
-        NumberAnimation {
-          target: dot; property: "scale"
-          from: 1.9; to: 1.0; duration: 520; easing.type: Easing.InOutSine
-        }
         onRunningChanged: if (!running) dot.scale = 1.0
+        NumberAnimation { target: dot; property: "scale"; from: 1.0; to: 1.9
+                          duration: 520; easing.type: Easing.InOutSine }
+        NumberAnimation { target: dot; property: "scale"; from: 1.9; to: 1.0
+                          duration: 520; easing.type: Easing.InOutSine }
       }
     }
 
@@ -152,5 +166,6 @@ PanelWindow {
       style: Text.Raised
       styleColor: "#40000000"
     }
+  }
   }
 }
