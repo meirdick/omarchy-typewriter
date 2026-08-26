@@ -69,7 +69,10 @@ MIN_RATIO="${TYPEWRITER_MIN_RATIO:-20}"
 SCOPE="${TYPEWRITER_SCOPE:-auto}"
 AUTO_FALLBACK="${TYPEWRITER_AUTO_FALLBACK:-all}"
 RESTORE_CLIPBOARD="${TYPEWRITER_RESTORE_CLIPBOARD:-1}"
-TERMINAL_RE="${TYPEWRITER_TERMINAL_RE:-alacritty|foot|kitty|ghostty|wezterm|org\.wezfurlong|rio|contour|terminal}"
+TERMINAL_RE="${TYPEWRITER_TERMINAL_RE:-^(alacritty|foot(client)?|kitty|com\.mitchellh\.ghostty|ghostty|wezterm|org\.wezfurlong\..*|rio|contour|konsole|org\.kde\.konsole|xterm|urxvt|rxvt.*|st|stterm|terminator|tilix|dev\.warp\.Warp|terminology|eterm|org\.gnome\.(Terminal|Console)|.*[-.]terminal)$}"
+# Force the terminal key bindings when the window class cannot say. Needed off
+# Hyprland, where there is no class at all.
+FORCE_TERMINAL="${TYPEWRITER_TERMINAL:-}"
 
 # Prompt lookup order. User prompts win, so a package upgrade never clobbers an
 # edited prompt, and the in-tree copy makes the script runnable from a checkout.
@@ -97,12 +100,37 @@ set_status() { # state, tooltip
     > "$STATUS_FILE.tmp" 2>/dev/null && mv "$STATUS_FILE.tmp" "$STATUS_FILE" 2>/dev/null || true
 }
 
-# --- on-screen indicator and failures ----------------------------------------
-# hyprctl notify draws in the compositor, so it appears instantly and never
-# lands in the notification history. Failures use the real notification daemon
-# so they stay on screen and can be reread.
-indicator_on()  { [ "$INDICATOR" = 1 ] && hyprctl notify 2 30000 "rgb(89b4fa)" "  $1" >/dev/null 2>&1 || true; }
-indicator_off() { [ "$INDICATOR" = 1 ] && hyprctl dismissnotify >/dev/null 2>&1 || true; }
+# --- on-screen indicator ------------------------------------------------------
+# Omarchy's shell is a resident quickshell process that already owns a
+# bottom-centre OSD - the surface the volume and brightness popups use. Poking
+# it costs ~44ms and needs no daemon of our own, so the tool still has no
+# resident process. hyprctl notify is the fallback elsewhere; its position is
+# not configurable, which is why it was never the right answer here.
+OSD=""
+if [ "$INDICATOR" = 1 ]; then
+  if command -v omarchy-shell >/dev/null 2>&1; then OSD=omarchy
+  elif command -v hyprctl >/dev/null 2>&1; then OSD=hyprctl
+  fi
+fi
+
+indicator_on() { # message, glyph, duration_ms (0 = until closed)
+  case "$OSD" in
+    omarchy)
+      jq -n --arg i "${2:-󰏫}" --arg m "$1" --argjson d "${3:-0}" \
+        '{icon:$i, message:$m, duration:$d}' \
+        | xargs -0 -I{} omarchy-shell -q osd show {} >/dev/null 2>&1 || true ;;
+    hyprctl)
+      hyprctl notify 2 "${3:-30000}" "rgb(89b4fa)" "  $1" >/dev/null 2>&1 || true ;;
+  esac
+  return 0
+}
+indicator_off() {
+  case "$OSD" in
+    omarchy)  omarchy-shell -q osd close >/dev/null 2>&1 || true ;;
+    hyprctl)  hyprctl dismissnotify >/dev/null 2>&1 || true ;;
+  esac
+  return 0
+}
 
 # Failures replace each other instead of stacking. A run of them used to leave a
 # wall of identical notifications on screen.
@@ -111,30 +139,42 @@ notify_failure() {
   # Scripted runs (--text, --print) stay silent; they report on stderr.
   [ "${quiet_notify:-0}" = 1 ] && return 0
   [ "$NOTIFY" = 1 ] || return 0
+  # The pill already showed this. Two corners for one message is worse than one.
+  [ "$OSD" = omarchy ] && return 0
   local prev id
   prev="$(cat "$NOTIFY_ID_FILE" 2>/dev/null || true)"
   id="$(notify-send -a "Typewriter" -u critical -p \
         ${prev:+-r "$prev"} "Typewriter failed" "$1" 2>/dev/null || true)"
   [ -n "$id" ] && printf '%s' "$id" > "$NOTIFY_ID_FILE"
+  return 0
 }
 die() {
-  indicator_off
   declare -F restore_clip >/dev/null && restore_clip
   set_status failed "$1"
+  indicator_on "$1" "󰀪" 5000
   notify_failure "$1"
   echo "$PROG: $1" >&2
   exit 1
 }
-trap indicator_off EXIT
+cleanup() {
+  indicator_off
+  declare -F restore_clip >/dev/null && restore_clip
+  # Never leave the bar claiming a run is still in flight.
+  [ "${in_flight:-0}" = 1 ] && set_status idle ""
+  return 0
+}
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT TERM
 
 # --- arguments ---------------------------------------------------------------
 preset=""; inline=""; copy_only=0; show_time=0; given_text=""
-print_only=0; quiet_notify=0; render_prompt=0; select_backend=0
+print_only=0; quiet_notify=0; render_prompt=0; select_backend=0; have_text=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --copy)    copy_only=1 ;;
     --time)    show_time=1 ;;
-    --text)    shift; given_text="${1-}"; copy_only=1; quiet_notify=1 ;;
+    --text)    [ $# -ge 2 ] || die "--text needs a value"
+               shift; given_text="$1"; have_text=1; copy_only=1; quiet_notify=1 ;;
     --print)   print_only=1; copy_only=1; quiet_notify=1 ;;
     --render-prompt) render_prompt=1; copy_only=1; quiet_notify=1 ;;
     --select-backend) select_backend=1; copy_only=1; quiet_notify=1 ;;
@@ -168,15 +208,17 @@ find_prompt() {
 }
 
 if [ -n "$inline" ]; then
-  instruction="$inline"; label="Rewriting"
+  instruction="$inline"; label="Rewriting"; glyph="󰧑"
 elif [ -n "$preset" ]; then
   [[ "$preset" =~ ^[a-z0-9][a-z0-9_-]*$ ]] \
     || die "invalid preset name: '$preset' (lowercase letters, digits, dash and underscore only)"
   file="$(find_prompt "$preset")" \
     || die "no prompt named '$preset' in ${PROMPT_DIRS[0]}"
-  instruction="$(cat "$file")"
+  # The icon declaration is metadata for the indicator, not an instruction.
+  instruction="$(sed '/^<!-- *icon:.*-->/d' "$file")"
   label="$(sed -n 's/^# *//p' "$file" | head -1)"
   [ -n "$label" ] || label="$preset"
+  glyph="$(sed -n 's/^<!-- *icon: *\(.*[^ ]\) *-->.*/\1/p' "$file" | head -1)"
 else
   die "usage: $PROG <preset> | $PROG -- \"instruction\""
 fi
@@ -184,7 +226,7 @@ fi
 # --- one run at a time -------------------------------------------------------
 # Without this a second keypress mid-run sends its copy keystroke into a window
 # that the first run is still pasting into.
-if [ -z "$given_text" ]; then
+if [ "$have_text" = 0 ]; then
   exec 9>"$RUNTIME_DIR/lock"
   # Note: every child that outlives this script must have fd 9 closed, or it
   # holds the lock on our behalf. wl-copy is the one that does.
@@ -200,11 +242,22 @@ fi
 # When nothing is selected, the script highlights the text itself with the same
 # keys a person would press. That is what makes the no-selection scopes work in
 # any app that handles standard editing keys.
-is_terminal() { printf '%s' "$1" | grep -qiE "$TERMINAL_RE"; }
+paste_text() { timeout "${TYPEWRITER_PASTE_TIMEOUT:-3}" wl-paste -t text -n 2>/dev/null || true; }
+
+is_terminal() {
+  [ "$FORCE_TERMINAL" = 1 ] && return 0
+  [ "$FORCE_TERMINAL" = 0 ] && return 1
+  # No class at all means no compositor to ask. Guessing "not a terminal" there
+  # would send a bare Ctrl+C, which is SIGINT - so refuse instead of guessing.
+  [ -n "$1" ] || return 1
+  printf '%s' "$1" | grep -qiE "$TERMINAL_RE"
+}
 restore_clip() { :; }
 
+no_selection="nothing selected - highlight some text first, or raise TYPEWRITER_CAPTURE_TIMEOUT_MS (now ${CAPTURE_TIMEOUT_MS}ms) if the app is slow to copy"
+
 # --text skips the capture entirely. For testing and for scripting.
-if [ -n "$given_text" ]; then
+if [ "$have_text" = 1 ]; then
   text="$given_text"
   class=""
 else
@@ -220,15 +273,22 @@ class="$(hyprctl activewindow -j 2>/dev/null \
 sleep "$PASTE_DELAY"
 
 sentinel="__${PROG}_sentinel_$$__"
-saved_clip="$(wl-paste -n 2>/dev/null || true)"
+saved_clip="$(paste_text)"
+clip_was_text=1
+timeout 2 wl-paste --list-types 2>/dev/null | grep -qi '^text/' || clip_was_text=0
 text=""
 
 restore_clip() {
   [ "$RESTORE_CLIPBOARD" = 1 ] || return 0
   [ -n "${sentinel:-}" ] || return 0
-  if [ -n "$saved_clip" ]; then printf '%s' "$saved_clip" | wl-copy 9>&- >/dev/null 2>&1
-  else wl-copy --clear 9>&- 2>/dev/null || true
+  if [ -n "$saved_clip" ]; then
+    printf '%s' "$saved_clip" | wl-copy 9>&- >/dev/null 2>&1
+  elif [ "${clip_was_text:-1}" = 1 ]; then
+    # Only clear a clipboard we know held text. Clearing over an image the
+    # snapshot could not capture would destroy it.
+    wl-copy --clear 9>&- 2>/dev/null || true
   fi
+  return 0
 }
 
 # Copy whatever is selected. Returns 1 if the clipboard never changed, which
@@ -245,13 +305,16 @@ copy_selection() {
   [ "$tries" -lt 1 ] && tries=1
   for _ in $(seq 1 "$tries"); do
     sleep 0.04
-    current="$(wl-paste -n 2>/dev/null || true)"
+    current="$(paste_text)"
     if [ "$current" != "$sentinel" ]; then text="$current"; return 0; fi
   done
+  # Grace check: a slow app whose copy lands just after the deadline would
+  # otherwise arrive after restore_clip and clobber the real clipboard.
+  sleep 0.25
+  current="$(paste_text)"
+  if [ "$current" != "$sentinel" ]; then text="$current"; return 0; fi
   return 1
 }
-
-no_selection="nothing selected - highlight some text first, or raise TYPEWRITER_CAPTURE_TIMEOUT_MS (now ${CAPTURE_TIMEOUT_MS}ms) if the app is slow to copy"
 
 select_to_line_start() { wtype -M shift -k Home -m shift; }
 select_to_start()      { wtype -M ctrl -M shift -k Home -m shift -m ctrl; }
@@ -361,9 +424,10 @@ fi
 
 if [ "$select_backend" = 1 ]; then printf '%s\n' "$BACKEND"; exit 0; fi
 
-indicator_on "$label…"
+in_flight=1
+indicator_on "$label…" "${glyph:-󰏫}" 0
 set_status working "$label"
-started=$(date +%s.%N)
+started_ns=$(date +%s%N)
 
 case "$BACKEND" in
   cloudflare)
@@ -375,13 +439,17 @@ case "$BACKEND" in
     cap=$(( ${#text} / 2 + 256 ))
     [ "$cap" -lt 1024 ] && cap=1024
     [ "$cap" -gt 4096 ] && cap=4096
-    body="$(jq -n --arg s "$system" --arg t "$payload" --argjson c "$cap" \
-      '{messages:[{role:"system",content:$s},{role:"user",content:$t}], max_tokens:$c, temperature:0.2}')"
-    resp="$(curl -sS -m 60 \
-      "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/ai/run/$CF_MODEL" \
-      -H "authorization: Bearer $(cf_token)" \
-      -H "content-type: application/json" \
-      -d "$body")" || die "request failed"
+    body_file="$(mktemp "$RUNTIME_DIR/body.XXXXXX")"
+    chmod 600 "$body_file"
+    jq -n --arg s "$system" --arg t "$payload" --argjson c "$cap" \
+      '{messages:[{role:"system",content:$s},{role:"user",content:$t}], max_tokens:$c, temperature:0.2}' \
+      > "$body_file"
+    resp="$(printf 'header = "authorization: Bearer %s"\n' "$(cf_token)" \
+      | curl -sS -m 60 --config - \
+        "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/ai/run/$CF_MODEL" \
+        -H "content-type: application/json" \
+        --data-binary "@$body_file")" || { rm -f "$body_file"; die "request failed"; }
+    rm -f "$body_file"
     if [ "$(printf '%s' "$resp" | jq -r '.success')" != true ]; then
       die "workers ai: $(printf '%s' "$resp" | jq -r '[.errors[]?.message] | join("; ")')"
     fi
@@ -389,13 +457,17 @@ case "$BACKEND" in
     ;;
   anthropic)
     [ -n "${ANTHROPIC_API_KEY:-}" ] || die "ANTHROPIC_API_KEY is not set"
-    body="$(jq -n --arg m "$ANTHROPIC_MODEL" --arg s "$system" --arg t "$payload" \
-      '{model:$m, max_tokens:8000, system:$s, messages:[{role:"user",content:$t}]}')"
-    resp="$(curl -sS -m 60 https://api.anthropic.com/v1/messages \
-      -H "content-type: application/json" \
-      -H "x-api-key: $ANTHROPIC_API_KEY" \
-      -H "anthropic-version: 2023-06-01" \
-      -d "$body")" || die "request failed"
+    body_file="$(mktemp "$RUNTIME_DIR/body.XXXXXX")"
+    chmod 600 "$body_file"
+    jq -n --arg m "$ANTHROPIC_MODEL" --arg s "$system" --arg t "$payload" \
+      '{model:$m, max_tokens:8000, system:$s, messages:[{role:"user",content:$t}]}' \
+      > "$body_file"
+    resp="$(printf 'header = "x-api-key: %s"\n' "$ANTHROPIC_API_KEY" \
+      | curl -sS -m 60 --config - https://api.anthropic.com/v1/messages \
+        -H "content-type: application/json" \
+        -H "anthropic-version: 2023-06-01" \
+        --data-binary "@$body_file")" || { rm -f "$body_file"; die "request failed"; }
+    rm -f "$body_file"
     err="$(printf '%s' "$resp" | jq -r 'if .type=="error" then .error.message else empty end')"
     [ -z "$err" ] || die "api error: $err"
     out="$(printf '%s' "$resp" | jq -r '[.content[] | select(.type=="text") | .text] | join("")')"
@@ -425,13 +497,34 @@ case "$BACKEND" in
   *) die "unknown backend: $BACKEND" ;;
 esac
 
-elapsed="$(echo "$(date +%s.%N) - $started" | bc)"
+elapsed_ms=$(( ($(date +%s%N) - started_ns) / 1000000 ))
 
 # Models sometimes echo the wrapper or fence the answer despite being told not
-# to. Strip both rather than pasting them into the document.
-out="$(printf '%s' "$out" | sed -e 's|</\?text>||g')"
-out="$(printf '%s' "$out" | sed -e '1{/^```[a-zA-Z]*$/d}' -e '${/^```$/d}')"
-out="$(printf '%s' "$out" | sed -e 's/[[:space:]]*$//' -e '1{/^[[:space:]]*$/d}')"
+# to. Strip only a wrapper that brackets the WHOLE response: a blanket strip
+# deleted <text> tags out of the user's own prose, removed the fences from a
+# selection that legitimately was a code block, and ate the trailing spaces that
+# make a markdown hard line break.
+strip_wrapper() { # tag
+  local first last
+  first="$(printf '%s' "$out" | head -1)"
+  last="$(printf '%s' "$out" | tail -1)"
+  if [ "$first" = "<$1>" ] && [ "$last" = "</$1>" ]; then
+    out="$(printf '%s' "$out" | sed -e '1d' -e '$d')"
+  fi
+}
+strip_wrapper text
+
+# A fence pair is only ours to remove if the input had none.
+if ! printf '%s' "$text" | grep -q '^```'; then
+  first="$(printf '%s' "$out" | head -1)"
+  last="$(printf '%s' "$out" | tail -1)"
+  if printf '%s' "$first" | grep -q '^```[a-zA-Z]*$' && [ "$last" = '```' ]; then
+    out="$(printf '%s' "$out" | sed -e '1d' -e '$d')"
+  fi
+fi
+
+# Trailing whitespace: last line only, and only a leading blank line.
+out="$(printf '%s' "$out" | sed -e '${s/[[:space:]]*$//}' -e '1{/^[[:space:]]*$/d}')"
 [ -n "$out" ] || { restore_clip; die "empty response"; }
 
 if [ "$show_time" = 1 ]; then
@@ -442,8 +535,9 @@ if [ "$show_time" = 1 ]; then
     pi)         used_model="$PI_MODEL" ;;
     *)          used_model="" ;;
   esac
-  printf 'backend=%s model=%s in=%s out=%s time=%.2fs\n' \
-    "$BACKEND" "$used_model" "${#text}" "${#out}" "$elapsed" >&2
+  printf 'backend=%s model=%s in=%s out=%s time=%d.%02ds\n' \
+    "$BACKEND" "$used_model" "${#text}" "${#out}" \
+    "$(( elapsed_ms / 1000 ))" "$(( (elapsed_ms % 1000) / 10 ))" >&2
 fi
 
 # A result far shorter than the input usually means the model answered the text
@@ -454,12 +548,13 @@ if [ "$copy_only" != 1 ] && [ "${#text}" -gt 80 ] \
   printf '%s' "$out" | wl-copy 9>&- >/dev/null 2>&1
   indicator_off
   set_status held "Result held back, on the clipboard"
+  indicator_on "Held back — on clipboard" "󰅚" 2500
   [ "$NOTIFY" = 1 ] && notify-send -a "Typewriter" -u critical "Typewriter held back" \
     "The result was ${#out} chars from ${#text}. Nothing was replaced; it is on the clipboard." 2>/dev/null || true
   exit 0
 fi
 
-printf '%s' "$out" | wl-copy 9>&- >/dev/null 2>&1
+in_flight=0
 indicator_off
 set_status idle ""
 
@@ -467,6 +562,8 @@ if [ "$print_only" = 1 ]; then
   printf '%s\n' "$out"
   exit 0
 fi
+
+printf '%s' "$out" | wl-copy 9>&- >/dev/null 2>&1
 
 if [ "$copy_only" = 1 ]; then
   { [ "$quiet_notify" = 1 ] || [ "$NOTIFY" != 1 ]; } \

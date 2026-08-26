@@ -10,13 +10,17 @@ license=('MIT')
 # Kept deliberately thin. Everything that gates a capability is optional, so the
 # package installs on any Wayland box and the setup wizard adds what you chose.
 depends=('bash' 'jq' 'curl' 'wl-clipboard' 'wtype')
+# optdepends must name packages pacman can resolve. The pi agent CLI is not in
+# the repos - it is mentioned in the README instead.
 optdepends=(
-  'pi: agent-harness backend, uses providers you already authenticated'
+  'omarchy: bottom-centre on-screen indicator and keybinding installation'
   'ollama: local backend, nothing leaves the machine'
   'ollama-vulkan: GPU acceleration for the local backend on Intel and AMD'
-  'hyprland: window-class detection and the on-screen indicator'
+  'hyprland: window-class detection, without which terminals are not detected'
   'libnotify: failure notifications'
   'gum: prompts in the setup wizard'
+  'inotify-tools: event-driven bar updates instead of polling'
+  'bash-completion: preset name completion'
 )
 backup=("etc/$pkgname/config")
 source=()
