@@ -13,9 +13,19 @@ import QtQuick
 PanelWindow {
   id: root
 
-  // Distance from the bottom edge. Small on purpose: this is a transient hint,
-  // not a dialog, and sitting near the edge keeps it out of the way of whatever
-  // the user is actually reading. Raise it if your bar is at the bottom.
+  // Distance from the bottom edge of the screen, in pixels. Small on purpose:
+  // this is a transient hint, not a dialog, and sitting on the edge keeps it
+  // out of the way of whatever the user is actually reading.
+  //
+  // 14 also clears Omarchy's own OSD, the volume and brightness card, which
+  // sits about 67px up and stands about 64px tall. The previous 96px put this
+  // indicator inside that band, so a volume change during a run drew one on
+  // top of the other.
+  //
+  // Raise it if your bar is at the bottom. This surface anchors to all four
+  // edges with ExclusionMode.Ignore, so it is not pushed up by the bar's
+  // exclusive zone: with "position": "bottom" in shell.json a bar of about
+  // 26px would cover the indicator. Around 40 clears it.
   property int bottomEdgeMargin: 14
 
   property string label: ""

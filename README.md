@@ -307,7 +307,7 @@ in Gmail or Docs replaces it with unformatted text.
 
 ```bash
 bash -n bin/omarchy-typewriter          # syntax
-node --test test/*.test.js              # 42 tests, no model, no network
+node --test test/*.test.js              # 44 tests, no model, no network
 ```
 
 The suite needs `bash`, `jq` and `node`. It shells out to the real script, so
