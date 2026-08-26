@@ -113,58 +113,71 @@ if [ "$INDICATOR" = 1 ]; then
   fi
 fi
 
-indicator_on() { # message, glyph, duration_ms (0 = until closed)
+# A spinner needs frames, and one omarchy-shell call is ~44ms, so the animation
+# runs in a background subshell that is killed the moment the result lands.
+SPIN_PID=""
+SPINNER="${TYPEWRITER_SPINNER:-󰪞 󰪟 󰪠 󰪡 󰪢 󰪣 󰪤 󰪥}"
+
+osd_show() { # glyph, message, duration_ms
   case "$OSD" in
     omarchy)
-      jq -n --arg i "${2:-󰏫}" --arg m "$1" --argjson d "${3:-0}" \
+      jq -n --arg i "$1" --arg m "$2" --argjson d "${3:-0}" \
         '{icon:$i, message:$m, duration:$d}' \
         | xargs -0 -I{} omarchy-shell -q osd show {} >/dev/null 2>&1 || true ;;
     hyprctl)
-      hyprctl notify 2 "${3:-30000}" "rgb(89b4fa)" "  $1" >/dev/null 2>&1 || true ;;
+      hyprctl notify 2 "${3:-30000}" "rgb(89b4fa)" "  $2" >/dev/null 2>&1 || true ;;
   esac
   return 0
 }
+
+indicator_on() { # message, glyph, duration_ms
+  osd_show "${2:-󰏫}" "$1" "${3:-0}"
+}
+
+# Thinking state: the preset's own name, with a glyph that cycles so the pill
+# reads as working rather than stuck. Stops itself if the run somehow does not.
+indicator_think() { # message
+  [ -n "$OSD" ] || return 0
+  indicator_stop
+  ( trap 'exit 0' TERM
+    set -- $SPINNER
+    local_frames=$#
+    i=0
+    while [ "$i" -lt 400 ]; do
+      eval "frame=\${$(( (i % local_frames) + 1 ))}"
+      osd_show "$frame" "$1" 400
+      i=$(( i + 1 ))
+      sleep 0.12
+    done ) &
+  SPIN_PID=$!
+  return 0
+}
+
+indicator_stop() {
+  [ -n "$SPIN_PID" ] && kill "$SPIN_PID" 2>/dev/null && wait "$SPIN_PID" 2>/dev/null
+  SPIN_PID=""
+  return 0
+}
+
+# Done: how long it took, held just long enough to read. The replaced text is
+# the real confirmation, so this stays brief and out of the way.
+indicator_done() { # elapsed_ms
+  local ms="$1"
+  if [ "$ms" -lt 1000 ]; then
+    osd_show "󰓎" "$(printf '%dms' "$ms")" 900
+  else
+    osd_show "󰓎" "$(printf '%d.%02ds' "$(( ms / 1000 ))" "$(( (ms % 1000) / 10 ))")" 900
+  fi
+}
+
 indicator_off() {
+  indicator_stop
   case "$OSD" in
     omarchy)  omarchy-shell -q osd close >/dev/null 2>&1 || true ;;
     hyprctl)  hyprctl dismissnotify >/dev/null 2>&1 || true ;;
   esac
   return 0
 }
-
-# Failures replace each other instead of stacking. A run of them used to leave a
-# wall of identical notifications on screen.
-NOTIFY_ID_FILE="$RUNTIME_DIR/notify-id"
-notify_failure() {
-  # Scripted runs (--text, --print) stay silent; they report on stderr.
-  [ "${quiet_notify:-0}" = 1 ] && return 0
-  [ "$NOTIFY" = 1 ] || return 0
-  # The pill already showed this. Two corners for one message is worse than one.
-  [ "$OSD" = omarchy ] && return 0
-  local prev id
-  prev="$(cat "$NOTIFY_ID_FILE" 2>/dev/null || true)"
-  id="$(notify-send -a "Typewriter" -u critical -p \
-        ${prev:+-r "$prev"} "Typewriter failed" "$1" 2>/dev/null || true)"
-  [ -n "$id" ] && printf '%s' "$id" > "$NOTIFY_ID_FILE"
-  return 0
-}
-die() {
-  declare -F restore_clip >/dev/null && restore_clip
-  set_status failed "$1"
-  indicator_on "$1" "󰀪" 5000
-  notify_failure "$1"
-  echo "$PROG: $1" >&2
-  exit 1
-}
-cleanup() {
-  indicator_off
-  declare -F restore_clip >/dev/null && restore_clip
-  # Never leave the bar claiming a run is still in flight.
-  [ "${in_flight:-0}" = 1 ] && set_status idle ""
-  return 0
-}
-trap cleanup EXIT
-trap 'cleanup; exit 130' INT TERM
 
 # --- arguments ---------------------------------------------------------------
 preset=""; inline=""; copy_only=0; show_time=0; given_text=""
@@ -254,7 +267,14 @@ is_terminal() {
   # No class at all means no compositor to ask. Guessing "not a terminal" there
   # would send a bare Ctrl+C, which is SIGINT - so refuse instead of guessing.
   [ -n "$1" ] || return 1
-  printf '%s' "$1" | grep -qiE "$TERMINAL_RE"
+  # $1 holds class and initialClass separated by a space. The pattern is
+  # anchored, so each name has to be tested on its own: a joined string can
+  # never match ^foot$, and getting that wrong sends SIGINT to the user's shell.
+  local name
+  for name in $1; do
+    printf '%s' "$name" | grep -q -i -E "$TERMINAL_RE" && return 0
+  done
+  return 1
 }
 restore_clip() { :; }
 
@@ -430,7 +450,7 @@ if [ "$select_backend" = 1 ]; then printf '%s\n' "$BACKEND"; exit 0; fi
 
 in_flight=1
 truncated=0
-indicator_on "$label…" "${glyph:-󰏫}" 0
+indicator_think "$label"
 set_status working "$label"
 started_ns=$(date +%s%N)
 
@@ -557,9 +577,9 @@ hold_back=0
 [ "${#text}" -gt 80 ] && [ $(( ${#out} * 100 / ${#text} )) -lt "$MIN_RATIO" ] && hold_back=1
 if [ "$copy_only" != 1 ] && [ "$hold_back" = 1 ]; then
   printf '%s' "$out" | wl-copy 9>&- >/dev/null 2>&1
-  indicator_off
+  indicator_stop
   set_status held "Result held back, on the clipboard"
-  indicator_on "Held back — on clipboard" "󰅚" 2500
+  osd_show "󰅚" "Held back — on clipboard" 2500
   [ "$NOTIFY" = 1 ] && notify-send -a "Typewriter" -u critical "Typewriter held back" \
     "$( [ "${truncated:-0}" = 1 ] \
         && printf 'The model ran out of room and the result is cut off.' \
@@ -568,8 +588,9 @@ if [ "$copy_only" != 1 ] && [ "$hold_back" = 1 ]; then
 fi
 
 in_flight=0
-indicator_off
+indicator_stop
 set_status idle ""
+[ "$quiet_notify" = 1 ] || indicator_done "$elapsed_ms"
 
 if [ "$print_only" = 1 ]; then
   printf '%s\n' "$out"

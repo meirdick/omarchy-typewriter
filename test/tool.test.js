@@ -140,6 +140,25 @@ test("a bad scope is refused", () => {
   assert.match(runFail(["proof", "--scope", "sideways", "--copy"]), /unknown scope/);
 });
 
+// hyprctl gives class and initialClass joined by a space. An anchored pattern
+// tested against the joined string can never match, which silently disables
+// terminal detection - and a terminal that is missed gets a bare Ctrl+C, which
+// is SIGINT to whatever is running in it.
+test("terminal detection handles the joined class string", () => {
+  const src = fs.readFileSync(TOOL, "utf8");
+  const start = src.indexOf("is_terminal() {");
+  const fn = src.slice(start, src.indexOf("\n}", start));
+  assert.match(fn, /for name in \$1/,
+    "each class name must be tested separately, not the joined string");
+});
+
+test("the terminal pattern is anchored", () => {
+  const src = fs.readFileSync(TOOL, "utf8");
+  const line = src.split("\n").find((l) => l.startsWith("TERMINAL_RE="));
+  assert.match(line, /\^\(/, "unanchored alternatives match substrings: rio in Serious-Sam");
+  assert.match(line, /\)\$/);
+});
+
 test("the words scope needs a number", () => {
   assert.match(runFail(["proof", "--scope", "words:many", "--copy"]), /needs a number/);
 });
