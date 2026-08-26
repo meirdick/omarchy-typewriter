@@ -67,6 +67,7 @@ INDICATOR="${TYPEWRITER_INDICATOR:-1}"
 NOTIFY="${TYPEWRITER_NOTIFY:-1}"
 MIN_RATIO="${TYPEWRITER_MIN_RATIO:-20}"
 SCOPE="${TYPEWRITER_SCOPE:-auto}"
+WORDLIST="${TYPEWRITER_WORDLIST:-$CONFIG_DIR/wordlist}"
 AUTO_FALLBACK="${TYPEWRITER_AUTO_FALLBACK:-all}"
 RESTORE_CLIPBOARD="${TYPEWRITER_RESTORE_CLIPBOARD:-1}"
 TERMINAL_RE="${TYPEWRITER_TERMINAL_RE:-^(alacritty|foot(client)?|kitty|com\.mitchellh\.ghostty|ghostty|wezterm|org\.wezfurlong\..*|rio|contour|konsole|org\.kde\.konsole|xterm|urxvt|rxvt.*|st|stterm|terminator|tilix|dev\.warp\.Warp|terminology|eterm|org\.gnome\.(Terminal|Console)|.*[-.]terminal)$}"
@@ -88,6 +89,55 @@ HISTORY="$STATE_DIR/history.jsonl"
 HISTORY_MAX="${TYPEWRITER_HISTORY_MAX:-500}"
 RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}/$PROG"
 mkdir -p "$RUNTIME_DIR" 2>/dev/null || true
+
+# --- wordlist ----------------------------------------------------------------
+# Two kinds of rule, because they need different mechanisms:
+#
+#   Kubernetes          protect - a term the model must not "correct"
+#   k8s => Kubernetes   replace - always written this way
+#
+# Protected terms go into the prompt, because only the model can decide whether
+# a word is being used as that term. Replacements are applied after the model,
+# deterministically, because a prompt is a request and a substitution is a
+# guarantee - and the whole point of putting a word here is that you are tired
+# of it coming back wrong.
+protected_terms=""
+replacements=""
+
+load_wordlist() {
+  [ -r "$WORDLIST" ] || return 0
+  local line lhs rhs
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ''|'#'*) continue ;; esac
+    if [ "${line#*=>}" != "$line" ]; then
+      lhs="${line%%=>*}"; rhs="${line#*=>}"
+      lhs="$(printf '%s' "$lhs" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+      rhs="$(printf '%s' "$rhs" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+      [ -n "$lhs" ] || continue
+      replacements="$replacements$lhs	$rhs
+"
+    else
+      line="$(printf '%s' "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+      [ -n "$line" ] || continue
+      protected_terms="$protected_terms, $line"
+    fi
+  done < "$WORDLIST"
+  protected_terms="${protected_terms#, }"
+  return 0
+}
+
+apply_replacements() { # text -> text
+  local out="$1" lhs rhs
+  [ -n "$replacements" ] || { printf '%s' "$out"; return 0; }
+  while IFS="$(printf '\t')" read -r lhs rhs; do
+    [ -n "$lhs" ] || continue
+    # Whole words only, case-insensitive on the match, exact on the result.
+    out="$(printf '%s' "$out" | sed -E "s/\\b$(printf '%s' "$lhs" | sed 's/[][\.*^$/]/\\&/g')\\b/$(printf '%s' "$rhs" | sed 's/[\/&]/\\&/g')/gI")"
+  done <<EOF
+$replacements
+EOF
+  printf '%s' "$out"
+}
 
 # --- stats and undo ----------------------------------------------------------
 # The history file holds metadata only - never the text. Text is what makes a
@@ -557,6 +607,14 @@ Rules:
 - Change nothing you were not asked to change.
 - If the text already satisfies the request, output it back unchanged."
 
+load_wordlist
+if [ -n "$protected_terms" ]; then
+  system="$system
+
+These are spelled correctly and must be left exactly as they are, whatever they
+look like: $protected_terms"
+fi
+
 if [ -n "${samples:-}" ]; then
   system="$system
 
@@ -713,6 +771,7 @@ fi
 
 # Trailing whitespace: last line only, and only a leading blank line.
 out="$(printf '%s' "$out" | sed -e '${s/[[:space:]]*$//}' -e '1{/^[[:space:]]*$/d}')"
+out="$(apply_replacements "$out")"
 [ -n "$out" ] || { restore_clip; die "empty response"; }
 
 case "$BACKEND" in

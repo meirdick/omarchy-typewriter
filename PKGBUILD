@@ -40,6 +40,8 @@ package() {
   install -m644 -t "$pkgdir/usr/share/$pkgname/prompts" prompts/*.md
 
   install -Dm644 config/config.example "$pkgdir/etc/$pkgname/config"
+  install -Dm644 config/wordlist.example \
+    "$pkgdir/usr/share/$pkgname/wordlist.example"
 
   install -Dm644 "completions/$pkgname.bash" \
     "$pkgdir/usr/share/bash-completion/completions/$pkgname"

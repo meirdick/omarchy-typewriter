@@ -189,6 +189,32 @@ test("the icon declaration is not sent as an instruction", () => {
   assert.doesNotMatch(out, /icon:/);
 });
 
+// A protected term is a request to the model; a replacement is a guarantee
+// applied afterwards. Both halves matter and they use different mechanisms.
+test("protected terms are named in the prompt", () => {
+  const wl = path.join(fs.mkdtempSync(path.join(require("node:os").tmpdir(), "tw-w-")), "wordlist");
+  fs.writeFileSync(wl, "# a comment\nAcme Robotics\nCrashLoopBackOff\n");
+  const out = run(["proof", "--text", "hello", "--render-prompt"], { TYPEWRITER_WORDLIST: wl });
+  assert.match(out, /Acme Robotics/);
+  assert.match(out, /CrashLoopBackOff/);
+  assert.doesNotMatch(out, /a comment/, "comments are not terms");
+});
+
+test("replacement rules are not sent as protected terms", () => {
+  const wl = path.join(fs.mkdtempSync(path.join(require("node:os").tmpdir(), "tw-w-")), "wordlist");
+  fs.writeFileSync(wl, "github => GitHub\n");
+  const out = run(["proof", "--text", "hello", "--render-prompt"], { TYPEWRITER_WORDLIST: wl });
+  assert.doesNotMatch(out, /spelled correctly/,
+    "a file of only replacements must not produce a protected-terms line");
+});
+
+test("an absent wordlist changes nothing", () => {
+  const out = run(["proof", "--text", "hello", "--render-prompt"], {
+    TYPEWRITER_WORDLIST: "/nonexistent/wordlist",
+  });
+  assert.doesNotMatch(out, /spelled correctly/);
+});
+
 test("the words scope needs a number", () => {
   assert.match(runFail(["proof", "--scope", "words:many", "--copy"]), /needs a number/);
 });

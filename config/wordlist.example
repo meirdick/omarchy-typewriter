@@ -1,0 +1,18 @@
+# One rule per line.
+#
+#   Kubernetes            protect: never "corrected", whatever it looks like
+#   k8s => Kubernetes     replace: always written this way
+
+# Terms to protect
+psql
+nginx
+CrashLoopBackOff
+Omarchy
+Hyprland
+Acme Robotics
+
+# Always write these this way
+github => GitHub
+javascript => JavaScript
+postgres => PostgreSQL
+k8s => Kubernetes

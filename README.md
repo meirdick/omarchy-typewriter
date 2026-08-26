@@ -127,6 +127,38 @@ sentence:
 The sample voice was short and declarative. Haiku adopted it; scout barely did.
 If voice matters to you, this is a reason to use a stronger backend.
 
+## Wordlist
+
+`~/.config/omarchy-typewriter/wordlist`, one rule per line:
+
+```
+# Terms to protect - never "corrected", whatever they look like
+Acme Robotics
+CrashLoopBackOff
+psql
+
+# Always written this way
+github => GitHub
+k8s => Kubernetes
+```
+
+The two halves use different mechanisms on purpose. **Protected terms go into
+the prompt**, because only the model can tell whether a word is being used as
+that term. **Replacements are applied after the model**, deterministically,
+because a prompt is a request and a substitution is a guarantee — and the reason
+a word ends up in this file is that you are tired of it coming back wrong.
+
+Worth the two minutes. Without it, on the sentence *"we shipped the acme hub
+update"*:
+
+| | |
+|---|---|
+| no wordlist | "we shipped the **migrate** hub update" |
+| `Acme Robotics` protected | "we shipped the **Acme Robotics** hub update" |
+
+It silently renamed the company. Proper nouns a model has never seen are exactly
+what it will confidently "fix".
+
 ## Scopes
 
 With text highlighted, that selection is used.
