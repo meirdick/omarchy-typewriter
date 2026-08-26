@@ -64,6 +64,7 @@ MAX_CHARS="${TYPEWRITER_MAX_CHARS:-20000}"
 PASTE_DELAY="${TYPEWRITER_PASTE_DELAY:-0.3}"
 CAPTURE_TIMEOUT_MS="${TYPEWRITER_CAPTURE_TIMEOUT_MS:-640}"
 INDICATOR="${TYPEWRITER_INDICATOR:-1}"
+NOTIFY="${TYPEWRITER_NOTIFY:-1}"
 MIN_RATIO="${TYPEWRITER_MIN_RATIO:-20}"
 SCOPE="${TYPEWRITER_SCOPE:-auto}"
 AUTO_FALLBACK="${TYPEWRITER_AUTO_FALLBACK:-all}"
@@ -109,6 +110,7 @@ NOTIFY_ID_FILE="$RUNTIME_DIR/notify-id"
 notify_failure() {
   # Scripted runs (--text, --print) stay silent; they report on stderr.
   [ "${quiet_notify:-0}" = 1 ] && return 0
+  [ "$NOTIFY" = 1 ] || return 0
   local prev id
   prev="$(cat "$NOTIFY_ID_FILE" 2>/dev/null || true)"
   id="$(notify-send -a "Typewriter" -u critical -p \
@@ -452,7 +454,7 @@ if [ "$copy_only" != 1 ] && [ "${#text}" -gt 80 ] \
   printf '%s' "$out" | wl-copy 9>&- >/dev/null 2>&1
   indicator_off
   set_status held "Result held back, on the clipboard"
-  notify-send -a "Typewriter" -u critical "Typewriter held back" \
+  [ "$NOTIFY" = 1 ] && notify-send -a "Typewriter" -u critical "Typewriter held back" \
     "The result was ${#out} chars from ${#text}. Nothing was replaced; it is on the clipboard." 2>/dev/null || true
   exit 0
 fi
@@ -467,7 +469,7 @@ if [ "$print_only" = 1 ]; then
 fi
 
 if [ "$copy_only" = 1 ]; then
-  [ "$quiet_notify" = 1 ] \
+  { [ "$quiet_notify" = 1 ] || [ "$NOTIFY" != 1 ]; } \
     || notify-send -a "Typewriter" -t 2500 "Typewriter" "Copied to clipboard" 2>/dev/null || true
   exit 0
 fi

@@ -19,7 +19,10 @@ const RUNTIME = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "tw-test-"
 function run(args, env = {}) {
   return execFileSync(TOOL, args, {
     encoding: "utf8",
-    env: { ...process.env, XDG_RUNTIME_DIR: RUNTIME, ...env },
+    // Never raise a desktop notification from a test run. Isolating
+    // XDG_RUNTIME_DIR is not enough - notify-send reaches the session daemon
+    // whatever the environment says.
+    env: { ...process.env, XDG_RUNTIME_DIR: RUNTIME, TYPEWRITER_NOTIFY: "0", ...env },
   });
 }
 
