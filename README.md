@@ -171,6 +171,13 @@ code editor that means everything above the cursor, so set
 
 `--scope selection|line|words:N|all` overrides per run.
 
+**In a terminal, select with the mouse.** There is no way to make a selection
+from outside: `Shift+Home` either scrolls the scrollback or is forwarded to the
+program, and a TUI text input — a shell prompt, an editor, Claude Code's own
+input — has no selection model the compositor can drive. So the no-selection
+scopes are disabled there, and the tool says so rather than pressing keys that
+would do something unpredictable.
+
 ## How it captures text
 
 It writes a sentinel to the clipboard, sends the copy keystroke, and waits for

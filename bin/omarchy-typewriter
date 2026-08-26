@@ -478,6 +478,7 @@ is_terminal() {
 restore_clip() { :; }
 
 no_selection="nothing selected - highlight some text first, or raise TYPEWRITER_CAPTURE_TIMEOUT_MS (now ${CAPTURE_TIMEOUT_MS}ms) if the app is slow to copy"
+no_selection_terminal="select the text with the mouse first - in a terminal nothing else can make a selection"
 
 # --text skips the capture entirely. For testing and for scripting.
 if [ "$have_text" = 1 ]; then
@@ -548,7 +549,8 @@ select_last_words() {
 
 case "$SCOPE" in
   selection)
-    copy_selection || { restore_clip; die "$no_selection"; }
+    copy_selection || { restore_clip
+      is_terminal "$class" && die "$no_selection_terminal" || die "$no_selection"; }
     ;;
   line)
     select_to_line_start
@@ -567,7 +569,7 @@ case "$SCOPE" in
       # Terminals do not select with Shift+Home, so there is nothing to fall
       # back to there.
       if is_terminal "$class"; then
-        restore_clip; die "$no_selection"
+        restore_clip; die "$no_selection_terminal"
       fi
       # Ctrl+Shift+Home stops at the edge of the focused input, so in Slack or a
       # Gmail compose box this takes the whole message being written and not the
