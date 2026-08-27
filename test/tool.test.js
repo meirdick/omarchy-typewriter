@@ -265,9 +265,9 @@ test("the icon declaration is not sent as an instruction", () => {
 // applied afterwards. Both halves matter and they use different mechanisms.
 test("protected terms are named in the prompt", () => {
   const wl = path.join(fs.mkdtempSync(path.join(require("node:os").tmpdir(), "tw-w-")), "wordlist");
-  fs.writeFileSync(wl, "# a comment\nAcme Robotics\nCrashLoopBackOff\n");
+  fs.writeFileSync(wl, "# a comment\nAcme\nCrashLoopBackOff\n");
   const out = run(["proof", "--text", "hello", "--render-prompt"], { TYPEWRITER_WORDLIST: wl });
-  assert.match(out, /Acme Robotics/);
+  assert.match(out, /Acme/);
   assert.match(out, /CrashLoopBackOff/);
   assert.doesNotMatch(out, /a comment/, "comments are not terms");
 });
@@ -333,15 +333,15 @@ test("a dot in a rule is a dot, not a wildcard", () => {
 });
 
 test("a wordlist can protect one term and replace another", () => {
-  const wl = wordlist("Acme Robotics\ngithub => GitHub\n");
+  const wl = wordlist("Acme\ngithub => GitHub\n");
   const prompt = run(["proof", "--text", "hello", "--render-prompt"], { TYPEWRITER_WORDLIST: wl });
-  assert.match(prompt, /spelled correctly[\s\S]*Acme Robotics/,
+  assert.match(prompt, /spelled correctly[\s\S]*Acme/,
     "the protected term is named in the prompt");
   assert.doesNotMatch(prompt, /github =>/, "a rule is not a term to protect");
 
   const out = run(["proof", "--text", "x", "--print"],
-    stubbedBackend("Acme Robotics uses github", { TYPEWRITER_WORDLIST: wl }));
-  assert.strictEqual(out.trim(), "Acme Robotics uses GitHub");
+    stubbedBackend("Acme uses github", { TYPEWRITER_WORDLIST: wl }));
+  assert.strictEqual(out.trim(), "Acme uses GitHub");
 });
 
 test("with no wordlist the model's answer is passed through", () => {
