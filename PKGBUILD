@@ -29,7 +29,7 @@ source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 # download builds without complaint. It can only become a real hash once the
 # v$pkgver tag exists on GitHub: push the tag, run `updpkgsums`, and commit the
 # result before publishing. Never push to the AUR with SKIP here. See BUILDING.md.
-sha256sums=('f5d17d34036f0afaf954ed0c1e5bea96abbb17745a0ef38324f337f2f4916a6e')
+sha256sums=('648526b43c7fa657aded436df5bd47e8abee52af09cb3a1108529bfb2a4f8d4f')
 
 package() {
   cd "$srcdir/$pkgname-$pkgver"
