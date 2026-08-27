@@ -9,12 +9,18 @@ Built for Wayland. Developed on Omarchy 4 with Hyprland.
 ## Install
 
 ```bash
-yay -S omarchy-typewriter      # once it is on the AUR
+git clone https://github.com/meirdick/omarchy-typewriter.git
+cd omarchy-typewriter
+makepkg -si
 omarchy-typewriter-setup
 ```
 
-Building from a checkout instead — see `BUILDING.md`, which covers the
-release and AUR steps.
+`makepkg` downloads the release tarball and verifies it against the checksum in
+the PKGBUILD, so this is the same build an AUR helper would produce.
+
+An AUR package is planned. Registration on the AUR is paused at the time of
+writing while they deal with automated sign-ups, so the clone above is the
+route for now.
 
 The wizard asks before every step, prints the exact command for anything
 needing sudo, and `--dry-run` prints the whole plan while changing nothing.
